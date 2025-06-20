@@ -9,6 +9,9 @@
 temp_docs/
 documents/
 uploads/
+test_output/
+data/
+temp/
 
 # Logs
 *.log
@@ -80,6 +83,9 @@ cache/
 # Configuraciones locales
 config_local.py
 settings_local.py
+ofertas_*.json
+ofertas_test_*.json
+scraper_test.log
 
 # Backups
 *.bak
