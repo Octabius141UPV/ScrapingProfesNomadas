@@ -36,16 +36,28 @@ REQUIRED_ENV_VARS = [
 ]
 
 def validate_environment():
-    """Valida que todas las variables de entorno requeridas estén configuradas"""
-    missing_vars = []
-    for var in REQUIRED_ENV_VARS:
-        if not os.getenv(var):
-            missing_vars.append(var)
+    """
+    Valida que las variables de entorno necesarias estén configuradas.
+    Lanza un EnvironmentError si falta alguna.
+    """
+    required_vars = {
+        'EDUCATIONPOSTS_USERNAME',
+        'EDUCATIONPOSTS_PASSWORD',
+        'TELEGRAM_BOT_TOKEN',
+        # 'OPENAI_API_KEY',
+        # 'ANTHROPIC_API_KEY',
+        # 'EMAIL_HOST',
+        # 'EMAIL_PORT',
+        # 'EMAIL_USER',
+        # 'EMAIL_PASSWORD',
+    }
+    
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
         raise EnvironmentError(
             f"Variables de entorno faltantes: {', '.join(missing_vars)}\n"
-            f"Por favor, configura estas variables en tu archivo .env"
+            "Por favor, configura estas variables en tu archivo .env"
         )
     
-    return True
+    print("✅ Todas las variables de entorno requeridas están configuradas.")

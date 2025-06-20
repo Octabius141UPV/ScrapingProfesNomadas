@@ -9,11 +9,11 @@ import sys
 import json
 from datetime import datetime
 
-# Agregar el directorio src al path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+# Agregar el directorio raíz del proyecto al path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.document_reader import DocumentReader
-from utils.logger import setup_logger
+from src.utils.document_reader import DocumentReader
+from src.utils.logger import setup_logger
 
 def test_pdf_generation():
     """Prueba la generación de PDFs personalizados"""
