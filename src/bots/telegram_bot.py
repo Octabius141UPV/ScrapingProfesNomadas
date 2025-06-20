@@ -14,6 +14,14 @@ import sys
 import asyncio
 from datetime import datetime
 import unicodedata
+import shutil
+import glob
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+import ssl
 
 # Añadir el directorio raíz al path para importaciones
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -825,8 +833,8 @@ class TelegramBot:
             os.makedirs("temp", exist_ok=True)
             
             # Generar nombre único para el archivo personalizado
+            school_name = offer.get('school_name', offer.get('school', 'Unknown')).replace(' ', '_').lower()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            school_name = offer.get('school_name', 'School').replace(' ', '_').lower()
             filename = f"application_form_{school_name}_{timestamp}.pdf"
             output_path = os.path.join("temp", filename)
             
@@ -1004,7 +1012,7 @@ class TelegramBot:
                         await processing_msg.edit_text(
                             f"✅ {doc_type_name} personalizado correctamente con los datos de la oferta:\n\n"
                             f"📌 Posición: {offer_data['position']}\n"
-                            f"📌 Escuela: {offer_data['school_name']}\n"
+                            f"📌 Escuela: {offer.get('school_name', offer.get('school', 'Unknown'))}\n"
                             f"📌 Roll Number: {offer_data['roll_number']}"
                         )
                         customized_paths[doc_type] = customized_path
@@ -1034,7 +1042,7 @@ class TelegramBot:
                         await processing_msg.edit_text(
                             f"✅ {doc_type_name} personalizado correctamente con los datos de la oferta:\n\n"
                             f"📌 Posición: {offer_data['position']}\n"
-                            f"📌 Escuela: {offer_data['school_name']}\n"
+                            f"📌 Escuela: {offer.get('school_name', offer.get('school', 'Unknown'))}\n"
                             f"📌 Roll Number: {offer_data['roll_number']}"
                         )
                         customized_paths[doc_type] = customized_path
@@ -1068,7 +1076,7 @@ class TelegramBot:
         attachments.extend(required_attachments)
         
         # Log de documentos adjuntados
-        self.logger.info(f"Documentos adjuntados para {offer.get('school_name', 'School')}:")
+        self.logger.info(f"Documentos adjuntados para {offer.get('school_name', offer.get('school', 'School'))}:")
         for doc_path in required_attachments:
             self.logger.info(f"- {os.path.basename(doc_path)}")
         
@@ -1087,6 +1095,20 @@ class TelegramBot:
         if user.teaching_council_registration:
             tc_info = " I already possess the Teaching Council Number route 1."
         
+        # --- OBTENER ADJUNTOS Y PREPARAR CUERPO ---
+        tc_registration_path = None
+        tc_registration_is_image = False
+        for doc_path in required_attachments:
+            if 'tc_registration' in doc_path or 'teaching_council' in doc_path:
+                tc_registration_path = doc_path
+                ext = os.path.splitext(doc_path)[1].lower()
+                if ext in ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff']:
+                    tc_registration_is_image = True
+                break
+        # Si es imagen, tc_info debe ser el texto especial
+        if tc_registration_is_image:
+            tc_info = 'Teaching Council Registration is in process.'
+        # Construir cuerpo del email
         email_body = f"""Dear Sir or Madam,
 
 I am {user.name}, a {education_level} Teacher.{tc_info}
@@ -1127,34 +1149,13 @@ Hope to hear from you soon,
             await update.message.reply_text(
                 "❌ Error al enviar el email. Por favor, verifica tu email y contraseña de aplicación."
             )
-            
-        finally:
-            # Limpiar archivos temporales
-            for attachment in attachments:
-                try:
-                    os.remove(attachment)
-                except:
-                    pass
+       
 
     async def send_test_email(self, offer: Dict, from_email: str, from_password: str) -> bool:
         """
         Envía un email de prueba a raulforteabusiness@gmail.com con los detalles de la oferta.
         """
         try:
-            import smtplib
-            from email.mime.text import MIMEText
-            from email.mime.multipart import MIMEMultipart
-            from email.mime.base import MIMEBase
-            from email import encoders
-            import os
-
-            # Filtro de emails genéricos
-            BAD_MAILS = ["noreply", "no-reply", "wordpress", "example.com", "educationposts.ie", "teachingcouncil.ie"]
-            school_email = offer.get('email', '').lower()
-            if not school_email or any(bad in school_email for bad in BAD_MAILS):
-                self.logger.warning(f"Email de la oferta no válido o genérico: {school_email}. No se enviará email de prueba.")
-                return False
-
             # Comprobar requerimientos/documentos
             required_docs = offer.get('required_documents', [])
             requirements = offer.get('requirements', '').strip()
@@ -1166,7 +1167,7 @@ Hope to hear from you soon,
             msg = MIMEMultipart()
             msg['From'] = from_email
             msg['To'] = "raulforteabusiness@gmail.com"
-            msg['Subject'] = f"[TEST] Application for {offer.get('vacancy', 'Teaching Position')} at {offer.get('school', 'School')}"
+            msg['Subject'] = f"[TEST] Application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} at {offer.get('school', offer.get('school_name', 'School'))}"
 
             doc_lines = '\n'.join(['- ' + doc for doc in required_docs])
             # Buscar el usuario correspondiente al email de origen
@@ -1271,44 +1272,39 @@ Hope to hear from you soon,
                 self.logger.warning(f"Usuario no encontrado para el email: {from_email}")
                 return False
 
-            # Obtener documentos requeridos para la oferta
-            required_attachments = self.get_re@quired_attachments(offer, user)
-            missing_docs = []
-            for doc_key in required_attachments:
-                if doc_key not in user.documents or not user.documents[doc_key]:
-                    missing_docs.append(doc_key)
-            if missing_docs:
-                self.logger.warning(f"FALTAN documentos requeridos para la oferta: {missing_docs}. NO se enviará el email.")
-                return False
-
             # Generar el formulario de aplicación personalizado
             form_path = await self.generate_application_form(offer, user)
             if not form_path or not os.path.exists(form_path):
                 self.logger.error("No se pudo generar el formulario de aplicación. No se enviará el email.")
                 return False
 
-            # --- SUBIR FORMULARIO A FIREBASE STORAGE ---
-            application_form_url = None
-            try:
-                # Crear un nombre de archivo único para Firebase Storage
-                destination_path = f"applications/{user.email}/{os.path.basename(form_path)}"
-                application_form_url = upload_file_to_storage(form_path, destination_path)
-                self.logger.info(f"Formulario de aplicación subido a Firebase Storage: {application_form_url}")
-            except Exception as e:
-                self.logger.error(f"Error al subir el formulario a Firebase Storage: {e}")
-                # El proceso continuará, pero se registrará el error.
-
-            # Obtener documentos requeridos usando la misma función que el método principal
+            # Obtener documentos requeridos usando la misma función que el método de test
             customized_paths = {'application_form': form_path}
             required_attachments = self.get_required_attachments(offer, user, customized_paths)
             attachments = required_attachments
 
             # Log de documentos adjuntados
-            self.logger.info(f"Documentos adjuntados para {offer.get('school_name', 'School')}:\n" + "\n".join([os.path.basename(doc) for doc in attachments]))
+            self.logger.info(f"Documentos adjuntados para {offer.get('school_name', offer.get('school', 'School'))}:\n" + "\n".join([os.path.basename(doc) for doc in attachments]))
 
-            # --- MODO TEST ---
-            to_email = offer['email']
-            subject = f"Application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} - {user.name}"
+            # Determinar el nivel educativo para el email
+            education_level = user.education_level or "Primary Education"
+            if education_level == "pre-school":
+                education_level = "Pre-school Education"
+            elif education_level == "primary":
+                education_level = "Primary Education"
+            elif education_level == "post-primary":
+                education_level = "Post-primary Education"
+
+            # Determinar si tiene Teaching Council Number
+            tc_info = ""
+            if user.teaching_council_registration:
+                tc_info = " I already possess the Teaching Council Number route 1."
+
+            body = f"""Dear Sir or Madam,\n\nI am {user.name}, a {education_level} Teacher.{tc_info}\n\nI found your school and I believe my teaching style is highly aligned with your requirements and values. I am truly interested in working with you as a {education_level} Teacher.\n\nHere I attach all the required documents for the application. If you need any further information, please do not hesitate to contact me.\n\nHope to hear from you soon,\n\n{user.name}\n{user.email}"""
+
+            # Asunto y destinatario
+            to_email = offer.get('email')
+            subject = f"Application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} at {offer.get('school', offer.get('school_name', 'School'))}"
             if getattr(user, 'test_mode', False):
                 to_email = "raulforteabusiness@gmail.com"
                 subject = f"[TEST] {subject}"
@@ -1322,40 +1318,66 @@ Hope to hear from you soon,
                 'documents': [],
                 'teaching_council_registration': user.teaching_council_registration
             }
-            # Adjuntar todos los documentos requeridos
             for doc_path in attachments:
                 user_data['documents'].append({'path': doc_path, 'filename': os.path.basename(doc_path)})
 
-            # Modificar la oferta para que el email de destino y el asunto sean los correctos
             offer_for_email = dict(offer)
             offer_for_email['email'] = to_email
             offer_for_email['custom_subject'] = subject
 
-            # Enviar el email usando EmailSender
-            success = await self.email_sender.send_application_email(
-                user_data=user_data,
-                offer=offer_for_email,
-                application_form_pdf=form_path
-            )
+            # --- ENVÍO DE EMAIL (idéntico al test, sin EmailSender) ---
+            msg = MIMEMultipart()
+            msg['From'] = from_email
+            msg['To'] = to_email
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+            # Adjuntar documentos
+            for doc_path in attachments:
+                if os.path.exists(doc_path):
+                    filename = os.path.basename(doc_path)
+                    with open(doc_path, 'rb') as f:
+                        part = MIMEBase('application', 'octet-stream')
+                        part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename= {filename}')
+                    msg.attach(part)
+
+            # Enviar email por SMTP
+            try:
+                context = ssl.create_default_context()
+                with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                    server.starttls(context=context)
+                    server.login(from_email, from_password)
+                    server.sendmail(from_email, to_email, msg.as_string())
+                self.logger.info(f"Email enviado exitosamente a {to_email}")
+                success = True
+            except Exception as e:
+                self.logger.error(f"Error al enviar email: {str(e)}")
+                success = False
+
             # Registrar la aplicación en Firebase (ahora también en modo test)
             if success:
-                mark_vacancy_as_applied(user.email, offer.get('url', ''), data={
+                offer_id = offer.get('id') or offer.get('vacancy_id') or offer.get('url', '').split('/')[-1] or 'unknown'
+                mark_vacancy_as_applied(user.email, offer_id, data={
                     'school': offer.get('school', ''),
                     'vacancy': offer.get('vacancy', ''),
                     'email': offer.get('email', ''),
                     'applied_at': datetime.now().isoformat()
                 })
                 self.logger.info("Email enviado correctamente y registrado en Firebase.")
-            # Limpiar archivos temporales
-            for attachment in attachments:
+
+            # Eliminar únicamente los documentos personalizados (no los originales subidos por el usuario)
+            files_to_delete = set([form_path] + list(customized_paths.values()))
+            for fpath in files_to_delete:
                 try:
-                    os.remove(attachment)
-                except:
+                    if fpath and os.path.exists(fpath):
+                        os.remove(fpath)
+                except Exception:
                     pass
             return success
         except Exception as e:
             self.logger.error(f"Error al enviar email: {str(e)}")
-            # No mostrar mensaje de error al usuario
             return False
 
     async def simulate_application(self, offers: List[Dict], user_id: int, context, from_email: str, from_password: str) -> None:
@@ -1398,6 +1420,8 @@ Hope to hear from you soon,
             chat_id=user_id,
             text=f"🎉 Proceso completado. Emails enviados: {sent_count}/{len(valid_offers)}"
         )
+        # Al finalizar todos los envíos, limpiar completamente la carpeta temp
+        self.clean_temp_folder()
         success = await self.send_test_email(
             offer=offer,
             from_email=from_email,
@@ -1522,7 +1546,7 @@ Hope to hear from you soon,
                 return
             # --- INTEGRACIÓN FIREBASE: filtrar ofertas ya aplicadas ---
             applied_ids = get_applied_vacancies(user.email)
-            offers = [o for o in offers if o.get('url') and o['url'] not in applied_ids]
+            offers = [o for o in offers if self.get_offer_id(o) not in applied_ids]
             if not offers:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1791,3 +1815,18 @@ Hope to hear from you soon,
         user = self.user_data[user_id]
         user.test_mode = True
         await update.message.reply_text("🧪 Modo test activado. Cuando envíes tus aplicaciones, se enviarán 10 emails de prueba al email de test en vez de los reales.")
+
+    def clean_temp_folder(self):
+        """Elimina todo el contenido de la carpeta temp evitando afectar los documentos originales."""
+        try:
+            import shutil, os
+            if os.path.isdir('temp'):
+                shutil.rmtree('temp')
+            os.makedirs('temp', exist_ok=True)
+            self.logger.info("Carpeta temp limpiada tras finalizar todos los envíos.")
+        except Exception as e:
+            self.logger.warning(f"Error limpiando carpeta temp: {e}")
+
+    def get_offer_id(self, offer: Dict) -> str:
+        """Devuelve un ID único de la oferta para registrar/consultar en Firebase."""
+        return offer.get('id') or offer.get('vacancy_id') or offer.get('url', '').split('/')[-1] or 'unknown'

@@ -21,7 +21,7 @@ class EmailSender:
         self.email_address = None
         self.email_password = None
             
-    async def send_application_email(self, user_data: Dict, offer: Dict, excel_path: str = None, application_form_pdf: str = None) -> bool:
+    async def send_application_email(self, user_data: Dict, offer: Dict, excel_path: str = None, application_form_pdf: str = None, body: str = None) -> bool:
         """
         Envía un email de solicitud personalizado para una oferta específica
         
@@ -30,6 +30,7 @@ class EmailSender:
             offer: Datos de la oferta
             excel_path: Path al archivo Excel (opcional)
             application_form_pdf: Path al PDF del application form personalizado (opcional)
+            body: Cuerpo personalizado del email (opcional)
         """
         try:
             # Configurar credenciales del usuario
@@ -45,9 +46,12 @@ class EmailSender:
             # Generar contenido del email
             subject = self._generate_subject(user_data, offer)
             
-            # Usar template estático para el cuerpo del email
-            body = self._generate_email_body_static(user_data, offer)
-            logger.info("Email generado con template estático")
+            # Usar el body proporcionado si existe, si no, generar como antes
+            if body is not None:
+                email_body = body
+            else:
+                email_body = self._generate_email_body_static(user_data, offer)
+            logger.info("Email generado con template estático" if body is None else "Email generado con body personalizado")
             
             # Crear mensaje
             msg = MIMEMultipart()
@@ -56,7 +60,7 @@ class EmailSender:
             msg['Subject'] = subject
             
             # Adjuntar cuerpo del mensaje
-            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            msg.attach(MIMEText(email_body, 'plain', 'utf-8'))
             
             # Adjuntar documentos si existen
             if user_data.get('documents'):
@@ -105,42 +109,54 @@ class EmailSender:
                 # Template por defecto si no existe el archivo
                 template = self._get_default_template()
             
-            # Intentar obtener TC Number del documento adjunto si existe
-            tc_number = None
-            tc_document = None
+            # Inicializar variables para el TC
+            tc_info_text = ""
             
-            # Verificar si hay documentos adjuntos
+            # Verificar si hay documentos de TC
+            tc_document_path = None
             if user_data.get('documents') and isinstance(user_data['documents'], dict):
-                # Buscar documento TC registration
-                if user_data['documents'].get('tc_registration'):
-                    tc_doc = user_data['documents']['tc_registration']
-                    if isinstance(tc_doc, dict) and tc_doc.get('path'):
-                        tc_document = tc_doc['path']
-                    elif isinstance(tc_doc, str):
-                        tc_document = tc_doc
-            
-            # Si encontramos un documento TC, intentar extraer el número
-            if tc_document:
-                tc_number = self._extract_tc_number_from_pdf(tc_document)
-                logger.info(f"TC Number extraído del PDF: {tc_number}")
-            
-            # Priorizar el TC number extraído del PDF, luego el proporcionado por el usuario
-            tc_to_use = tc_number if tc_number else user_data.get('teaching_council_registration')
-            
-            # Reemplazar [Teaching Council Number] en la plantilla
-            if tc_to_use:
-                # Si hay TC number, incluir el texto indicando que ya lo tiene
+                tc_doc = user_data['documents'].get('tc_registration')
+                if isinstance(tc_doc, dict) and tc_doc.get('path'):
+                    tc_document_path = tc_doc['path']
+                elif isinstance(tc_doc, str):
+                    tc_document_path = tc_doc
+
+            # Determinar el texto del TC basado en el documento
+            if tc_document_path and os.path.exists(tc_document_path):
+                # Comprobar si es una imagen
+                if any(tc_document_path.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg']):
+                    tc_info_text = "My Teaching Council registration is currently being processed."
+                    logger.info("TC Registration es una imagen. Usando texto de 'en trámite'.")
+                # Si es un PDF, intentar extraer el número
+                elif tc_document_path.lower().endswith('.pdf'):
+                    tc_number = self._extract_tc_number_from_pdf(tc_document_path)
+                    if tc_number:
+                        tc_info_text = f"I already possess the Teaching Council Number route 1 ({tc_number})."
+                        logger.info(f"TC Number extraído del PDF: {tc_number}")
+                    else:
+                        # Fallback si no se puede extraer el número del PDF
+                        tc_info_text = "I have attached my Teaching Council registration."
+                        logger.info("No se pudo extraer el TC Number del PDF. Usando texto genérico.")
+            # Si no hay documento, usar el número de TC si está en los datos del usuario
+            elif user_data.get('teaching_council_registration'):
+                tc_number = user_data.get('teaching_council_registration')
+                tc_info_text = f"I already possess the Teaching Council Number route 1 ({tc_number})."
+                logger.info(f"Usando TC Number de los datos de usuario: {tc_number}")
+
+            # Reemplazar la sección del TC en la plantilla
+            if tc_info_text:
+                full_sentence = f"I am {user_data.get('name', '[nombre]')}, a Primary Education Teacher. {tc_info_text}"
                 formatted_template = template.replace(
                     "I am [nombre], a Primary Education Teacher. [I already possess the Teaching Council Number route 1 (en caso de que ya lo tengan)]",
-                    f"I am {user_data.get('name', '[nombre]')}, a Primary Education Teacher. I already possess the Teaching Council Number route 1 ({tc_to_use})"
+                    full_sentence
                 )
             else:
-                # Si no hay TC number, quitar la parte opcional
+                # Si no hay información del TC, quitar la parte opcional
                 formatted_template = template.replace(
                     "I am [nombre], a Primary Education Teacher. [I already possess the Teaching Council Number route 1 (en caso de que ya lo tengan)]",
                     f"I am {user_data.get('name', '[nombre]')}, a Primary Education Teacher."
                 )
-            
+
             # Reemplazar [nombre] donde sea que aparezca en el texto
             formatted_template = formatted_template.replace("[nombre]", user_data.get('name', '[nombre]'))
             

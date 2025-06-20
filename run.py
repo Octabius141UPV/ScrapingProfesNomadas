@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 if __name__ == "__main__":
     try:
         # Importamos la función 'main' del script estable y la ejecutamos
-        from scrape_all_safe import main as scrape_main
+        from scripts.scrape_all_safe import main as scrape_main
         
         # El script original 'scrape_all_safe.py' maneja su propio bucle de eventos asyncio
         # por lo que simplemente llamamos a su función main.
