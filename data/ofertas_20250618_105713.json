@@ -1,0 +1,132 @@
+[
+  {
+    "url": "https://www.educationposts.ie/post/view/238446",
+    "school": "St Peter Apostle JNS",
+    "vacancy": "Mainstream Class Teacher",
+    "status": "Fixed-term",
+    "county": "Dublin 22",
+    "deadline": "238446",
+    "position_info": {
+      "schedule": "Temporary"
+    },
+    "requirements": "• Letter of Application • Teaching Practice Grades • Copy of Certificates, Diplomas, Degrees • Teaching Council Registration • Standard Application Form for Teaching Posts - in English",
+    "contact_info": "UsAdvertising QueriesSoniaMy AccountLogout",
+    "additional_info": {
+      "school type:mainstream with special classes": "School Structure:Junior School",
+      "school type:": "Mainstream with Special Classes",
+      "school structure:junior school": "Gender:Co-Educational",
+      "school structure:": "Junior School",
+      "school patronage:catholic": "Classification:DEIS 1",
+      "school patronage:": "Catholic",
+      "droichead school:": "Yes"
+    },
+    "roll_number": "19569OApply",
+    "email": "stpeterapostlejnsapplications@gmail.com",
+    "custom_application_form": "/Users/raulfortea/Projects/ScrapingProfesNomadas/temp/Application_Form_St_Peter_Apostle_JNS_20250618_105709_0.docx",
+    "district": "Dublin 22",
+    "required_documents": [
+      "Certificates and Diplomas",
+      "Application Form (English)",
+      "Letter of Application",
+      "Teaching Council Registration",
+      "Teaching Practice Grades"
+    ]
+  },
+  {
+    "url": "https://www.educationposts.ie/post/view/237262",
+    "school": "Scoil Aine Presentation PS",
+    "vacancy": "Mainstream Class Teacher",
+    "status": "Fixed-term",
+    "county": "Dublin 22",
+    "deadline": "237262",
+    "description": "For any enquiries visit theContact Ussection or email us atinfo@educationposts.ie.",
+    "position_info": {
+      "schedule": "Temporary"
+    },
+    "requirements": "TextAParent",
+    "contact_info": "UsAdvertising QueriesSoniaMy AccountLogout",
+    "custom_application_form": "/Users/raulfortea/Projects/ScrapingProfesNomadas/temp/Application_Form_Scoil_Aine_Presentation_PS_20250618_105709_1.docx",
+    "district": "Dublin 22",
+    "required_documents": []
+  },
+  {
+    "url": "https://www.educationposts.ie/post/view/237270",
+    "school": "Scoil Aine Presentation PS",
+    "vacancy": "Support Teacher",
+    "status": "Fixed-term",
+    "county": "Dublin 22",
+    "deadline": "237270",
+    "position_info": {
+      "schedule": "Temporary"
+    },
+    "requirements": "• Letter of Application • Standard Application Form for Teaching Posts - in English",
+    "contact_info": "UsAdvertising QueriesSoniaMy AccountLogout",
+    "additional_info": {
+      "school type:mainstream with special classes": "School Structure:Vertical",
+      "school type:": "Mainstream with Special Classes",
+      "school structure:vertical": "Gender:Girls with Infant Boys",
+      "school structure:": "Vertical",
+      "school patronage:catholic": "Total No. of Teaching Staff:18",
+      "school patronage:": "Catholic",
+      "droichead school:": "Yes"
+    },
+    "roll_number": "19221UApply",
+    "email": "vacancy.scoilaine@gmail.com",
+    "custom_application_form": "/Users/raulfortea/Projects/ScrapingProfesNomadas/temp/Application_Form_Scoil_Aine_Presentation_PS_20250618_105709_2.docx",
+    "district": "Dublin 22",
+    "required_documents": [
+      "Application Form (English)",
+      "Letter of Application"
+    ]
+  },
+  {
+    "url": "https://www.educationposts.ie/post/view/237344",
+    "school": "St Ronans NS",
+    "vacancy": "Mainstream Class Teacher",
+    "status": "Fixed-term",
+    "county": "Dublin 22",
+    "deadline": "237344",
+    "description": "For any enquiries visit theContact Ussection or email us atinfo@educationposts.ie.",
+    "position_info": {
+      "schedule": "Temporary"
+    },
+    "requirements": "TextAParent",
+    "contact_info": "UsAdvertising QueriesSoniaMy AccountLogout",
+    "custom_application_form": "/Users/raulfortea/Projects/ScrapingProfesNomadas/temp/Application_Form_St_Ronans_NS_20250618_105709_3.docx",
+    "district": "Dublin 22",
+    "required_documents": []
+  },
+  {
+    "url": "https://www.educationposts.ie/post/view/237347",
+    "school": "Scoil Nano Nagle",
+    "vacancy": "Mainstream Class Teacher",
+    "status": "Fixed-term",
+    "county": "Dublin 22",
+    "deadline": "237347",
+    "position_info": {
+      "schedule": "Temporary"
+    },
+    "requirements": "• Letter of Application • Referees (name, role, contact no.) • Copy of Certificates, Diplomas, Degrees • Teaching Council Registration • Standard Application Form for Teaching Posts - in English",
+    "contact_info": "UsAdvertising QueriesSoniaMy AccountLogout",
+    "additional_info": {
+      "school type:mainstream": "School Structure:Junior School",
+      "school type:": "Mainstream",
+      "school structure:junior school": "Gender:Co-Educational",
+      "school structure:": "Junior School",
+      "school patronage:catholic": "Classification:DEIS 1",
+      "school patronage:": "Catholic",
+      "droichead school:": "Yes"
+    },
+    "roll_number": "19509TApply",
+    "email": "recruitment@scoilnanonagle.com",
+    "custom_application_form": "/Users/raulfortea/Projects/ScrapingProfesNomadas/temp/Application_Form_Scoil_Nano_Nagle_20250618_105709_4.docx",
+    "district": "Dublin 22",
+    "required_documents": [
+      "Certificates and Diplomas",
+      "Application Form (English)",
+      "Letter of Application",
+      "Teaching Council Registration",
+      "Referees Details"
+    ]
+  }
+]
