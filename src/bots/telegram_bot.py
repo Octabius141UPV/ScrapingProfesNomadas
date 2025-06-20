@@ -23,7 +23,7 @@ from src.utils.pdf_generator import PDFGenerator
 from src.utils.document_validator import DocumentValidator
 from src.scrapers.scraper_educationposts import EducationPosts
 import traceback
-from src.utils.firebase_manager import get_applied_vacancies, mark_vacancy_as_applied
+from src.utils.firebase_manager import get_applied_vacancies, mark_vacancy_as_applied, upload_file_to_storage
 from src.generators.email_sender import EmailSender
 
 # Configurar logging
@@ -1286,6 +1286,17 @@ Hope to hear from you soon,
             if not form_path or not os.path.exists(form_path):
                 self.logger.error("No se pudo generar el formulario de aplicación. No se enviará el email.")
                 return False
+
+            # --- SUBIR FORMULARIO A FIREBASE STORAGE ---
+            application_form_url = None
+            try:
+                # Crear un nombre de archivo único para Firebase Storage
+                destination_path = f"applications/{user.email}/{os.path.basename(form_path)}"
+                application_form_url = upload_file_to_storage(form_path, destination_path)
+                self.logger.info(f"Formulario de aplicación subido a Firebase Storage: {application_form_url}")
+            except Exception as e:
+                self.logger.error(f"Error al subir el formulario a Firebase Storage: {e}")
+                # El proceso continuará, pero se registrará el error.
 
             # Obtener documentos requeridos usando la misma función que el método principal
             customized_paths = {'application_form': form_path}
