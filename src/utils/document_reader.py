@@ -460,16 +460,22 @@ class DocumentReader:
             try:
                 last_page = doc[-1]
                 date_variantes = ['Date:', 'Date', 'DATE:', 'DATE']
-                date_rect = None
+                all_date_rects = []
                 
-                # Buscar el texto "Date:" en la última página
+                # Buscar todas las ocurrencias de las variantes de fecha
                 for variante in date_variantes:
                     areas = last_page.search_for(variante, quads=False)
                     if areas:
-                        # Usar la primera coincidencia que encontremos
-                        date_rect = areas[0]
-                        break
+                        all_date_rects.extend(areas)
                 
+                # Seleccionar el 'date_rect' que esté más abajo en la página
+                date_rect = None
+                if all_date_rects:
+                    # Ordenar por la coordenada y1 (de arriba a abajo) y coger el último
+                    all_date_rects.sort(key=lambda rect: rect.y1)
+                    date_rect = all_date_rects[-1]
+                    logger.info(f"Se encontraron {len(all_date_rects)} campos de fecha. Se usará el más bajo en la página: {date_rect}")
+
                 if date_rect:
                     current_date = datetime.now().strftime("%d/%m/%Y")
                     # La posición de inserción es a la derecha de la etiqueta "Date:"

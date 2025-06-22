@@ -330,6 +330,21 @@ class TelegramBot:
                 if doc_type == 'tc_registration':
                     user.teaching_council_registration = True
                     logger.info(f"Usuario {user_id} subió documento TC Registration, actualizando teaching_council_registration=True")
+                    
+                    # Si ya conocemos la ruta, usamos el mensaje dinámico. Si no, uno genérico.
+                    if user.tc_route:
+                        await update.message.reply_text(
+                            f"My application for the Teaching Council number {user.tc_route} has already been submitted and is currently being processed."
+                        )
+                    else:
+                        # Si no se conoce la ruta, se pide al usuario
+                        user.state = "waiting_tc_route_from_doc"
+                        await update.message.reply_text(
+                            "✅ Documento de TC Registration guardado. \n"
+                            "Por favor, indica tu ruta de registro en el Teaching Council (1, 2, 3 o 4):"
+                        )
+                        # No continuamos con el resto de la lógica de handle_document hasta que se dé la ruta
+                        return
                 
                 # Verificar documentos obligatorios faltantes
                 missing_docs = []
@@ -877,8 +892,42 @@ class TelegramBot:
             self.logger.error(f"Error generando Application Form personalizado: {str(e)}")
             return None
 
+    def _get_tc_info(self, user: UserData, attachments: List[str]) -> str:
+        """Genera el texto informativo sobre el Teaching Council basado en los datos del usuario."""
+        if not user.teaching_council_registration:
+            return ""
+
+        # Por defecto, se asume que se posee el TC si no se especifica un documento
+        tc_info = ""
+        tc_registration_is_image = False
+
+        # Verificar si el documento de TC es una imagen
+        for doc_path in attachments:
+            if any(keyword in os.path.basename(doc_path).lower() for keyword in ['tc', 'registration', 'teaching council']):
+                ext = os.path.splitext(doc_path)[1].lower()
+                if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif']:
+                    tc_registration_is_image = True
+                    break
+        
+        # Si el documento es una imagen, se considera "en proceso"
+        if tc_registration_is_image:
+            if user.tc_route:
+                tc_info = f" My application for the Teaching Council number {user.tc_route} has already been submitted and is currently being processed."
+            else:
+                tc_info = " My application for the Teaching Council has already been submitted and is currently being processed."
+        # Si no es una imagen (es un PDF o no hay documento pero marcó 'sí')
+        else:
+            if user.tc_route:
+                tc_info = f" I already possess the Teaching Council Number route {user.tc_route}."
+            else:
+                tc_info = " I already possess the Teaching Council Number."
+        
+        return tc_info
+
     async def send_application_email(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Envía el email de aplicación"""
+        """
+        Envía un correo electrónico de solicitud para una oferta específica.
+        """
         if not await self.is_authorized(update):
             return
             
@@ -1111,29 +1160,7 @@ class TelegramBot:
             education_level = "Post-primary Education"
         
         # Determinar si tiene Teaching Council Number
-        tc_info = ""
-        if user.teaching_council_registration:
-            tc_registration_is_image = False
-            # Verificar si el documento de TC es una imagen
-            for doc_path in attachments:
-                if any(keyword in os.path.basename(doc_path).lower() for keyword in ['tc', 'registration', 'teaching council']):
-                    ext = os.path.splitext(doc_path)[1].lower()
-                    if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif']:
-                        tc_registration_is_image = True
-                        break
-            
-            if tc_registration_is_image:
-                # Si es una imagen, está "en proceso"
-                if user.tc_route:
-                    tc_info = f" My application for the Teaching Council number {user.tc_route} has already been submitted and is currently being processed."
-                else:
-                    tc_info = " My application for the Teaching Council number has already been submitted and is currently being processed."
-            else:
-                # Si no es imagen (es PDF o no se adjuntó pero se indicó 'Sí'), se asume que ya se posee
-                if user.tc_route:
-                    tc_info = f" I already possess the Teaching Council Number route {user.tc_route}."
-                else:
-                    tc_info = " I already possess the Teaching Council Number."
+        tc_info = self._get_tc_info(user, attachments)
         
         # Construir cuerpo del email
         email_body = f"""Dear Sir or Madam,
@@ -1236,29 +1263,7 @@ Hope to hear from you soon,
                 education_level = "Post-primary Education"
             
             # Determinar si tiene Teaching Council Number
-            tc_info = ""
-            if user.teaching_council_registration:
-                tc_registration_is_image = False
-                # Verificar si el documento de TC es una imagen
-                for doc_path in attachments:
-                    if any(keyword in os.path.basename(doc_path).lower() for keyword in ['tc', 'registration', 'teaching council']):
-                        ext = os.path.splitext(doc_path)[1].lower()
-                        if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif']:
-                            tc_registration_is_image = True
-                            break
-                
-                if tc_registration_is_image:
-                    # Si es una imagen, está "en proceso"
-                    if user.tc_route:
-                        tc_info = f" Teaching Council Registration is in process (Route {user.tc_route})."
-                    else:
-                        tc_info = " Teaching Council Registration is in process."
-                else:
-                    # Si no es imagen (es PDF o no se adjuntó pero se indicó 'Sí'), se asume que ya se posee
-                    if user.tc_route:
-                        tc_info = f" I already possess the Teaching Council Number route {user.tc_route}."
-                    else:
-                        tc_info = " I already possess the Teaching Council Number."
+            tc_info = self._get_tc_info(user, attachments)
             
             body = f"""Dear Sir or Madam,
 
@@ -1343,29 +1348,7 @@ Hope to hear from you soon,
                 education_level = "Post-primary Education"
 
             # Determinar si tiene Teaching Council Number
-            tc_info = ""
-            if user.teaching_council_registration:
-                tc_registration_is_image = False
-                # Verificar si el documento de TC es una imagen
-                for doc_path in attachments:
-                    if any(keyword in os.path.basename(doc_path).lower() for keyword in ['tc', 'registration', 'teaching council']):
-                        ext = os.path.splitext(doc_path)[1].lower()
-                        if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif']:
-                            tc_registration_is_image = True
-                            break
-                
-                if tc_registration_is_image:
-                    # Si es una imagen, está "en proceso"
-                    if user.tc_route:
-                        tc_info = f" Teaching Council Registration is in process (Route {user.tc_route})."
-                    else:
-                        tc_info = " Teaching Council Registration is in process."
-                else:
-                    # Si no es imagen (es PDF o no se adjuntó pero se indicó 'Sí'), se asume que ya se posee
-                    if user.tc_route:
-                        tc_info = f" I already possess the Teaching Council Number route {user.tc_route}."
-                    else:
-                        tc_info = " I already possess the Teaching Council Number."
+            tc_info = self._get_tc_info(user, attachments)
 
             body = f"""Dear Sir or Madam,\n\nI am {user.name}, a {education_level} Teacher.{tc_info}\n\nI found your school and I believe my teaching style is highly aligned with your requirements and values. I am truly interested in working with you as a {education_level} Teacher.\n\nHere I attach all the required documents for the application. If you need any further information, please do not hesitate to contact me.\n\nHope to hear from you soon,\n\n{user.name}\n{user.email}"""
 
