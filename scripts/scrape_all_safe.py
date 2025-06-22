@@ -211,7 +211,6 @@ async def process_user_request_with_county(user_data):
 
         # --- INICIO BLOQUE TEST EMAILS ---
         if user_data.get('test_mode'):
-            import os
             test_recipient = os.getenv('EMAIL_ADDRESS')
             selected_offers = valid_offers[:10]
             logger.info(f"Enviando 10 emails de prueba a {test_recipient} usando send_test_email...")
@@ -260,7 +259,7 @@ async def process_user_request_with_county(user_data):
                     logger.info(f"PDF temporal eliminado: {os.path.basename(pdf_path)}")
                     
             except Exception as e:
-                error_msg = f"Error con {offer['school_name']}: {str(e)}"
+                error_msg = f"Error con {offer.get('school_name', 'Escuela Desconocida')}: {str(e)}"
                 errors.append(error_msg)
                 logger.error(error_msg)
             await asyncio.sleep(3)

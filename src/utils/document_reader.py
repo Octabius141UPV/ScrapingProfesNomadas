@@ -19,6 +19,7 @@ import io
 from pdf2image import convert_from_path
 from PIL import Image, ImageDraw, ImageFont
 import fitz  # PyMuPDF
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +455,47 @@ class DocumentReader:
                 rect_expanded = fitz.Rect(topmost_rect.x0 - padding, topmost_rect.y0 - padding, topmost_rect.x0 + 350, topmost_rect.y1 + padding)
                 page.draw_rect(rect_expanded, color=(1,1,1), fill=(1,1,1))
                 page.insert_text((topmost_rect.x0, topmost_rect.y0), new_text, fontsize=font_size, color=(0,0,0))
+            
+            # 4. Añadir la fecha en la última página
+            try:
+                last_page = doc[-1]
+                date_variantes = ['Date:', 'Date', 'DATE:', 'DATE']
+                date_rect = None
+                
+                # Buscar el texto "Date:" en la última página
+                for variante in date_variantes:
+                    areas = last_page.search_for(variante, quads=False)
+                    if areas:
+                        # Usar la primera coincidencia que encontremos
+                        date_rect = areas[0]
+                        break
+                
+                if date_rect:
+                    current_date = datetime.now().strftime("%d/%m/%Y")
+                    # La posición de inserción es a la derecha de la etiqueta "Date:"
+                    # Ajuste: se reduce el espacio a 5px y se sube 2px para mejor alineación
+                    insert_pos = fitz.Point(date_rect.x1 + 5, date_rect.y1 - 2)
+                    
+                    # Definir el rectángulo para tapar la fecha anterior
+                    # Se extiende desde la derecha de "Date:" hasta el final del área esperada de la fecha
+                    cover_rect = fitz.Rect(
+                        date_rect.x1 + 1,   # Empezar a cubrir 1px después de "Date:"
+                        date_rect.y0 - 2, # Un poco de padding vertical
+                        date_rect.x1 + 150, # Ancho suficiente para tapar fechas largas
+                        date_rect.y1 + 2
+                    )
+                    
+                    # Dibujar el rectángulo blanco para tapar la fecha vieja
+                    last_page.draw_rect(cover_rect, color=(1, 1, 1), fill=(1, 1, 1))
+                    
+                    # Insertar el texto de la fecha nueva
+                    last_page.insert_text(insert_pos, current_date, fontsize=font_size, color=(0,0,0))
+                    logger.info(f"Fecha '{current_date}' insertada en la última página (cubriendo la anterior).")
+                else:
+                    logger.warning("No se encontró el campo 'Date:' en la última página. No se pudo insertar la fecha.")
+            except Exception as e:
+                logger.error(f"Error al intentar añadir la fecha en la última página: {str(e)}")
+
             doc.save(output_path)
             doc.close()
             logger.info(f"Application Form PDF personalizado guardado en: {output_path}")

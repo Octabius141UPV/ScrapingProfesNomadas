@@ -6,14 +6,13 @@ import asyncio
 import os
 import sys
 import logging
-from datetime import datetime
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
 load_dotenv()
 
 # Añadir el directorio raíz al path para importaciones
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scrape_all_safe import process_user_request_with_county
 
@@ -33,7 +32,10 @@ async def run_scraping_and_forms():
         user_data = {
             'name': 'Usuario Ejemplo',
             'county_selection': 'cork',  # 'cork', 'dublin', 'both', 'all'
-            'education_level': 'primary'
+            'education_level': 'primary',
+            # Asegúrate de que la plantilla existe o el bot te la pedirá.
+            # Ejemplo de cómo podría pasarse una plantilla si el bot no gestionara la subida:
+            'application_form': 'data/Application Form Álvaro.pdf'
         }
         
         logger.info(f"📍 Condado seleccionado: {user_data['county_selection']}")
@@ -42,11 +44,14 @@ async def run_scraping_and_forms():
         # Ejecutar scraping y generación de forms
         result = await process_user_request_with_county(user_data)
         
-        if result['success']:
+        if result.get('success'):
             logger.info("✅ Proceso completado exitosamente!")
-            logger.info(f"📊 Total ofertas encontradas: {result['total_offers']}")
-            logger.info(f"📝 PDFs generados: {result['total_forms_generated']}")
-            logger.info(f"📁 Archivo guardado: {result['file_saved']}")
+            if 'total_offers' in result:
+                logger.info(f"📊 Total ofertas encontradas: {result['total_offers']}")
+            if 'total_forms_generated' in result:
+                logger.info(f"📝 PDFs generados: {result['total_forms_generated']}")
+            if result.get('file_saved'):
+                logger.info(f"📁 Archivo guardado: {result['file_saved']}")
             logger.info(f"📋 Mensaje: {result['message']}")
             
             # Mostrar información de los PDFs generados
@@ -54,38 +59,24 @@ async def run_scraping_and_forms():
                 logger.info("\n📄 PDFs generados:")
                 for i, form in enumerate(result['generated_forms'], 1):
                     logger.info(f"  {i}. {os.path.basename(form['file_path'])}")
-                    logger.info(f"     Escuela: {form['school_name']}")
-                    logger.info(f"     Posición: {form['position']}")
-                    logger.info(f"     Roll Number: {form['roll_number']}")
+                    logger.info(f"     Escuela: {form.get('school_name', 'N/A')}")
+                    logger.info(f"     Posición: {form.get('position', 'N/A')}")
+                    if form.get('roll_number'):
+                        logger.info(f"     Roll Number: {form['roll_number']}")
         else:
-            logger.error(f"❌ Error en el proceso: {result['message']}")
+            logger.error(f"❌ Error en el proceso: {result.get('message', 'Error desconocido')}")
             
     except Exception as e:
-        logger.error(f"❌ Error inesperado: {str(e)}")
+        logger.error(f"❌ Error inesperado: {str(e)}", exc_info=True)
 
 async def main():
     """Función principal"""
     logger.info("🤖 Sistema de Scraping + Generación de Application Forms PDFs")
     logger.info("=" * 60)
     
-    # Verificar que existe una plantilla
-    template_paths = [
-        "data/Application_Form_Template.pdf",
-        "temp/template_application_form.pdf",
-        "templates/application_form_template.pdf"
-    ]
-    
-    template_found = False
-    for template in template_paths:
-        if os.path.exists(template):
-            logger.info(f"✅ Plantilla encontrada: {template}")
-            template_found = True
-            break
-    
-    if not template_found:
-        logger.warning("⚠️ No se encontró plantilla de application form")
-        logger.info("💡 Coloca una plantilla PDF en data/Application_Form_Template.pdf")
-        logger.info("💡 O ejecuta el bot de Telegram para descargar la plantilla")
+    # Este script asume que la plantilla será gestionada por el bot o
+    # que la ruta se provee en `user_data`.
+    # Puedes añadir una verificación aquí si lo necesitas.
     
     # Ejecutar el proceso
     await run_scraping_and_forms()

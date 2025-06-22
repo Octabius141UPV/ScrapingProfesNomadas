@@ -211,6 +211,14 @@ class TelegramBot:
         await update.message.reply_text(welcome_message)
         await self.solicitar_nombre(update)
     
+    async def solicitar_nombre(self, update: Update):
+        """Solicita el nombre del usuario."""
+        user_id = update.effective_user.id
+        user = self.user_data.get(user_id)
+        if user:
+            user.state = "waiting_name"
+            await update.message.reply_text("Para comenzar, por favor, dime tu nombre completo:")
+    
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Maneja el comando /help"""
         if not await self.is_authorized(update):
@@ -253,34 +261,9 @@ class TelegramBot:
             file = await update.message.document.get_file()
             file_name = update.message.document.file_name.lower()
             
-            # Identificar el tipo de documento
-            doc_type = self.document_validator.identify_document(file_name)
-            
-            # --- INICIO: Nueva Lógica de Validación de Formato ---
-            is_tc_registration = doc_type == 'tc_registration'
-            is_pdf = file_name.lower().endswith('.pdf')
-            is_image = any(file_name.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.heic', '.webp'])
-
-            if is_tc_registration:
-                if not is_pdf and not is_image:
-                    await update.message.reply_text("❌ Error: El documento 'TC Registration' debe ser un archivo PDF o una imagen (JPG, PNG).")
-                    return
-            else:
-                if not is_pdf:
-                    await update.message.reply_text(f"❌ Error: El documento '{doc_type or 'desconocido'}' debe estar en formato PDF.")
-                    return
-            # --- FIN: Nueva Lógica de Validación de Formato ---
-            
-            # Crear directorio temporal si no existe
-            os.makedirs("temp", exist_ok=True)
-            temp_path = os.path.join("temp", file_name)
-            
-            # Descargar el archivo
-            await file.download_to_drive(temp_path)
-            
-            # Determinar el tipo de documento
+            # 1. Determinar el tipo de documento PRIMERO
             doc_type = None
-            file_name_lower = file_name.lower()
+            file_name_lower = file_name # Ya está en minúsculas
             
             # Mapeo de palabras clave a tipos de documento
             doc_keywords = {
@@ -300,9 +283,37 @@ class TelegramBot:
                     doc_type = doc_type_key
                     break
                     
-            # Caso especial: "letter of application def adc" debe procesarse como Letter of Application, no Application Form
+            # Caso especial: "letter of application def adc" debe procesarse como Letter of Application
             if 'letter of application def adc' in file_name_lower or ('letter of application' in file_name_lower and 'def adc' in file_name_lower):
                 doc_type = 'letter_of_application'
+            
+            # 2. AHORA, se valida el formato del archivo
+            is_tc_registration = doc_type == 'tc_registration'
+            is_pdf = file_name.lower().endswith('.pdf')
+            is_image = any(file_name.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.heic', '.webp'])
+
+            if is_tc_registration:
+                if not is_pdf and not is_image:
+                    await update.message.reply_text("❌ Error: El documento 'TC Registration' debe ser un archivo PDF o una imagen (JPG, PNG).")
+                    return
+            else:
+                # Si el tipo de documento es conocido pero no es PDF, se rechaza.
+                # Si no es conocido (doc_type es None), se le notificará al usuario más abajo.
+                if doc_type and not is_pdf:
+                    await update.message.reply_text(f"❌ Error: El documento '{doc_type}' debe estar en formato PDF.")
+                    return
+            
+            # Crear directorio temporal si no existe
+            os.makedirs("temp", exist_ok=True)
+            # Usar el nombre original del archivo para guardarlo, no la versión en minúsculas
+            temp_path = os.path.join("temp", update.message.document.file_name)
+            
+            # Descargar el archivo
+            await file.download_to_drive(temp_path)
+            
+            # 3. Se notifica al usuario y se guarda el estado
+            # Mensaje especial para 'letter of application def adc'
+            if 'letter of application def adc' in file_name_lower or ('letter of application' in file_name_lower and 'def adc' in file_name_lower):
                 await update.message.reply_text(
                     "ℹ️ He identificado que el archivo 'Letter of Application def AdC' es una carta de presentación. "
                     "Lo procesaré como Letter of Application."
@@ -312,7 +323,7 @@ class TelegramBot:
                 # Guardar el documento
                 user.documents[doc_type] = {
                     'path': temp_path,
-                    'filename': file_name
+                    'filename': update.message.document.file_name
                 }
                 
                 # Actualizar atributos adicionales para compatibilidad
@@ -344,7 +355,7 @@ class TelegramBot:
                         optional_docs.append("Religious Education Certificate")
                     
                     # Construir mensaje
-                    message = f"✅ {file_name} guardado correctamente.\n\n"
+                    message = f"✅ {update.message.document.file_name} guardado correctamente.\n\n"
                     
                     if missing_docs:
                         message += "⚠️ Aún faltan los siguientes documentos OBLIGATORIOS:\n" + \
@@ -1391,12 +1402,32 @@ Hope to hear from you soon,
             # Adjuntar documentos
             for doc_path in attachments:
                 if os.path.exists(doc_path):
-                    filename = os.path.basename(doc_path)
+                    doc_type = None
+                    original_filename = os.path.basename(doc_path)
+
+                    # Buscar el tipo de documento para darle un nombre adecuado
+                    for key, doc_info in user.documents.items():
+                        if doc_info and doc_info.get('path') == doc_path:
+                            doc_type = key
+                            original_filename = doc_info.get('filename', original_filename)
+                            break
+                    
+                    # Forzar nombre y extensión para documentos problemáticos
+                    final_filename = original_filename
+                    if doc_type == 'degree':
+                        final_filename = "Degree.pdf"
+                    elif doc_type == 'tc_registration':
+                        # Mantener extensión original para imágenes
+                        ext = os.path.splitext(original_filename)[1]
+                        if not ext: # si no tiene extensión, forzar pdf
+                            ext = '.pdf'
+                        final_filename = f"TC_Registration{ext}"
+                    
                     with open(doc_path, 'rb') as f:
                         part = MIMEBase('application', 'octet-stream')
                         part.set_payload(f.read())
                     encoders.encode_base64(part)
-                    part.add_header('Content-Disposition', f'attachment; filename= {filename}')
+                    part.add_header('Content-Disposition', f'attachment; filename="{final_filename}"') # Usar comillas para nombres con espacios
                     msg.attach(part)
 
             # Enviar email por SMTP
