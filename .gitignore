@@ -89,3 +89,5 @@ scraper_test.log
 # Backups
 *.bak
 *.backup
+
+config.json

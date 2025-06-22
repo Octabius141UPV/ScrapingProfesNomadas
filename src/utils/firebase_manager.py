@@ -3,42 +3,27 @@ from firebase_admin import credentials, firestore, storage
 import os
 import json
 from dotenv import load_dotenv
+import codecs
 
-# Cargar variables de entorno desde .env
-load_dotenv()
+# Cargar variables de entorno y forzar la sobreescritura
+load_dotenv(override=True)
 
 try:
-    # Construir el diccionario de credenciales a partir de variables de entorno individuales
-    private_key_from_env = os.getenv('FIREBASE_PRIVATE_KEY', '')
-    
-    # Es crucial reemplazar los caracteres de escape '\\n' por saltos de línea reales '\n'
-    private_key = private_key_from_env.replace('\\n', '\n')
+    # Método estándar y recomendado para inicializar Firebase
+    cred_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if not cred_path or not os.path.exists(cred_path):
+        raise ValueError("La variable de entorno GOOGLE_APPLICATION_CREDENTIALS no está configurada o el archivo no existe. Debe apuntar a serviceAccountKey.json")
 
-    creds_dict = {
-        "type": os.getenv("FIREBASE_TYPE"),
-        "project_id": os.getenv("FIREBASE_PROJECT_ID"),
-        "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-        "private_key": private_key,
-        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
-        "client_id": os.getenv("FIREBASE_CLIENT_ID"),
-        "auth_uri": os.getenv("FIREBASE_AUTH_URI"),
-        "token_uri": os.getenv("FIREBASE_TOKEN_URI"),
-        "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL"),
-        "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL"),
-        "universe_domain": os.getenv("FIREBASE_UNIVERSE_DOMAIN")
-    }
-
-    if not all(creds_dict.values()):
-        raise ValueError("Faltan una o más variables de entorno de Firebase. Asegúrate de que todas las variables FIREBASE_* están configuradas en el archivo .env")
-
-    cred = credentials.Certificate(creds_dict)
+    cred = credentials.Certificate(cred_path)
     storage_bucket_url = os.getenv('FIREBASE_STORAGE_BUCKET')
     if not storage_bucket_url:
         raise ValueError("La variable de entorno FIREBASE_STORAGE_BUCKET no está configurada.")
 
-    firebase_admin.initialize_app(cred, {
-        'storageBucket': storage_bucket_url
-    })
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred, {
+            'storageBucket': storage_bucket_url
+        })
+    
     db = firestore.client()
     bucket = storage.bucket()
     print("✅ Conexión con Firebase establecida correctamente.")

@@ -22,6 +22,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import ssl
+import re
 
 # Añadir el directorio raíz al path para importaciones
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -75,6 +76,7 @@ class UserData:
         
         # Solo el atributo que realmente causa el error
         self.teaching_council_registration = None
+        self.tc_route = None
         self.test_mode = False  # Nuevo atributo para el modo test
 
     def has_required_documents(self):
@@ -124,8 +126,8 @@ class TelegramBot:
         try:
             authorized_ids_env = os.getenv('AUTHORIZED_USER_IDS', '')
             if authorized_ids_env:
-                # Si hay un valor en .env, usarlo (formato: "id1,id2,id3")
-                self.authorized_user_ids = [int(id_str.strip()) for id_str in authorized_ids_env.split(',')]
+                # Usar regex para encontrar solo los números y convertirlos a int
+                self.authorized_user_ids = [int(id_str) for id_str in re.findall(r'\d+', authorized_ids_env)]
             else:
                 # Si no, usar la variable global definida al inicio
                 self.authorized_user_ids = AUTHORIZED_USER_IDS
@@ -191,27 +193,23 @@ class TelegramBot:
         welcome_message = (
             "👋 ¡Bienvenido al Bot de Scraping de EducationPosts!\n\n"
             "Este bot te ayudará a realizar búsquedas de ofertas educativas en Irlanda y enviar tus aplicaciones.\n\n"
-            "📋 Proceso simplificado:\n"
-            "1. Proporciona tu nombre y correo electrónico\n"
-            "2. Indica si tienes Teaching Council Number\n"
-            "3. Sube tus documentos (asegúrate de nombrarlos correctamente)\n"
-            "4. Selecciona condado y nivel educativo para buscar ofertas\n\n"
-            "📝 IMPORTANTE: Nombra tus documentos incluyendo estas palabras exactas:\n\n"
-            "📄 Documentos OBLIGATORIOS:\n"
-            "• Letter of Application (nombre debe contener 'letter of application')\n"
-            "• CV (nombre debe contener 'cv')\n"
-            "• Título universitario (nombre debe contener 'degree')\n"
-            "• Application Form (.pdf) (nombre debe contener 'application form')\n"
-            "• Teaching Practice (.docx recomendado) (nombre debe contener 'teaching practice')\n"
-            "• Referees (.docx recomendado) (nombre debe contener 'referees')\n\n"
-            "📄 Documentos OPCIONALES:\n"
-            "• Certificado de registro TC (nombre debe contener 'tc registration')\n"
-            "• Certificado de religión (nombre debe contener 'religion')\n\n"
-            
+            "📝 **REGLA IMPORTANTE: Todos los documentos deben estar en formato PDF.**\n"
+            "La única excepción es el TC Registration, que también puede ser una imagen (JPG, PNG).\n\n"
+            "El bot reconoce tus archivos por el nombre. Incluye estas palabras clave:\n\n"
+            "📄 **Documentos OBLIGATORIOS (PDF):**\n"
+            "• `letter of application`, `cover letter`\n"
+            "• `cv`, `resume`\n"
+            "• `degree`, `titulo`, `certificate`\n"
+            "• `application form`, `formulario`\n"
+            "• `teaching practice`, `practicas`\n"
+            "• `referees`, `references`\n\n"
+            "📄 **Documentos OPCIONALES:**\n"
+            "• `religion`, `religious` (PDF)\n"
+            "• `tc registration`, `teaching council` (PDF o Imagen)\n"
         )
         
         await update.message.reply_text(welcome_message)
-        self.user_data[user_id].state = "waiting_name"
+        await self.solicitar_nombre(update)
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Maneja el comando /help"""
@@ -220,20 +218,20 @@ class TelegramBot:
         
         help_text = (
             "📚 **GUÍA DE DOCUMENTOS**\n\n"
-            "Para que el sistema reconozca automáticamente tus documentos, incluye estas palabras en el nombre del archivo:\n\n"
-            "📄 **Documentos Obligatorios:**\n"
-            "• Para Letter of Application: 'letter of application', 'carta', 'application letter' o 'cover letter'\n"
-            "• Para CV: 'cv', 'curriculum', 'resume' o 'resumen'\n"
-            "• Para Degree: 'degree', 'titulo', 'certificate', 'diploma' o 'qualification'\n"
-            "• Para Standard Application Form (.pdf): 'application form', 'formulario', 'standard' o 'template'\n"
-            "• Para Teaching Practice/Placements (.docx o .pdf): 'teaching practice', 'practicas', 'practices', 'placement', 'teaching placement', 'placements'\n"
-            "• Para Referees (.docx o .pdf): 'referees', 'references', 'referentes' o 'referencia'\n\n"
+            "Para que el sistema te permita continuar, **TODOS los documentos deben estar en formato PDF**.\n\n"
+            "La **única excepción** es el **TC Registration**, que puede ser un archivo **PDF o una imagen** (JPG, PNG, etc.).\n\n"
+            "El bot reconoce tus archivos por el nombre. Incluye estas palabras clave para que los identifique correctamente:\n\n"
+            "📄 **Documentos Obligatorios (en formato PDF):**\n"
+            "• `letter of application`, `carta`, `cover letter`\n"
+            "• `cv`, `curriculum`, `resume`\n"
+            "• `degree`, `titulo`, `certificate`, `diploma`\n"
+            "• `application form`, `formulario`, `standard`\n"
+            "• `teaching practice`, `practicas`, `placements`\n"
+            "• `referees`, `references`, `referencia`\n\n"
             "📄 **Documentos Opcionales:**\n"
-            "• Para Teaching Council Registration: 'tc registration', 'teaching council' o 'registration'\n"
-            "• Para Religion Certificate: 'religion', 'religious', 'catequesis' o 'catequista'\n"
-            "• Para TC Registration: se acepta PDF o imagen (jpg, jpeg, png, webp, heic, heif, bmp, tiff, gif)\n\n"
-            "IMPORTANTE: Se requiere formato .pdf para Application Form y se recomienda .docx o .pdf para Teaching Practice y Referees Details para permitir la personalización automática con los datos de cada oferta.\n\n"
-            "💡 **Consejo:** Si tienes problemas con el reconocimiento, asegúrate de que el nombre del archivo contenga al menos una de las palabras clave mencionadas."
+            "• Para `religion`, `religious`: solo **PDF**.\n"
+            "• Para `tc registration`, `teaching council`: **PDF o Imagen**.\n\n"
+            "💡 **Consejo:** Si el bot no reconoce un archivo, comprueba que el nombre del fichero contenga una de las palabras clave y que sea un PDF."
         )
         
         await update.message.reply_text(help_text)
@@ -255,36 +253,23 @@ class TelegramBot:
             file = await update.message.document.get_file()
             file_name = update.message.document.file_name.lower()
             
-            # Permitir imágenes para TC Registration
-            is_tc_registration = any(keyword in file_name for keyword in ['tc', 'registration', 'teaching council'])
-            valid_tc_exts = ('.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif')
-            if is_tc_registration and not file_name.endswith(valid_tc_exts):
-                await update.message.reply_text(
-                    f"❌ El documento TC Registration debe estar en formato PDF o imagen (jpg, jpeg, png, webp, heic, heif, bmp, tiff, gif).\nPor favor, sube una captura de pantalla o el PDF del email de confirmación."
-                )
-                return
+            # Identificar el tipo de documento
+            doc_type = self.document_validator.identify_document(file_name)
             
-            # Validar tipo de archivo para los documentos que deben ser PDF
-            is_application_form = any(keyword in file_name for keyword in ['application form', 'formulario', 'template', 'applicationform'])
-            is_teaching_practice = any(keyword in file_name for keyword in ['teaching practice', 'practicas', 'practices', 'placement', 'teaching placement', 'placements'])
-            is_referees = any(keyword in file_name for keyword in ['referees', 'references', 'referentes', 'referencia'])
-            
-            # Para Application Form, Teaching Practice y Referees, permitir .pdf o .docx para los dos últimos
-            if is_application_form:
-                if not file_name.endswith('.pdf'):
-                    await update.message.reply_text(
-                        f"❌ El documento Application Form debe estar en formato .pdf.\n\n"
-                        f"👉 Para aprovechar la personalización automática con los datos de la oferta, sube el documento en formato .pdf."
-                    )
+            # --- INICIO: Nueva Lógica de Validación de Formato ---
+            is_tc_registration = doc_type == 'tc_registration'
+            is_pdf = file_name.lower().endswith('.pdf')
+            is_image = any(file_name.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.heic', '.webp'])
+
+            if is_tc_registration:
+                if not is_pdf and not is_image:
+                    await update.message.reply_text("❌ Error: El documento 'TC Registration' debe ser un archivo PDF o una imagen (JPG, PNG).")
                     return
-            elif is_teaching_practice or is_referees:
-                if not (file_name.endswith('.docx') or file_name.endswith('.pdf')):
-                    document_type = "Teaching Practice" if is_teaching_practice else "Referees"
-                    await update.message.reply_text(
-                        f"❌ El documento {document_type} debe estar en formato .docx o .pdf.\n\n"
-                        f"👉 Para aprovechar la personalización automática con los datos de la oferta, sube el documento en formato .docx si es posible."
-                    )
+            else:
+                if not is_pdf:
+                    await update.message.reply_text(f"❌ Error: El documento '{doc_type or 'desconocido'}' debe estar en formato PDF.")
                     return
+            # --- FIN: Nueva Lógica de Validación de Formato ---
             
             # Crear directorio temporal si no existe
             os.makedirs("temp", exist_ok=True)
@@ -302,7 +287,7 @@ class TelegramBot:
                 'letter_of_application': ['letter of application', 'letterofapplication'],
                 'cv': ['cv', 'curriculum', 'resume'],
                 'degree': ['degree', 'titulo', 'universidad', 'universitario'],
-                'application_form': ['application form', 'formulario', 'template', 'applicationform', 'standard'],
+                'application_form': ['application form', 'formulario', 'template', 'applicationform'],
                 'teaching_practice': ['teaching practice', 'practicas', 'practices', 'placement', 'teaching placement', 'placements'],
                 'referees': ['referees', 'references', 'referentes', 'referencia'],
                 'tc_registration': ['tc', 'registration', 'teaching council'],
@@ -484,34 +469,58 @@ class TelegramBot:
             else:
                 await update.message.reply_text("Por favor, responde 'sí' o 'no'.")
                 return
-            user.teaching_council_registration = tc_registration  # Actualizar el atributo para compatibilidad
+            
+            user.teaching_council_registration = tc_registration
             logger.info(f"Usuario {user_id} tiene TC registration: {tc_registration}")
-            # Pasar directamente al estado waiting_documents
-            user.state = "waiting_documents"
-            await update.message.reply_text(
-                "✅ Información básica guardada.\n\n"
-                "Ahora, por favor envía los documentos requeridos por EducationPosts.\n\n"
-                "📄 Documentos OBLIGATORIOS:\n"
-                "• Letter of Application (nombre debe contener 'letter of application', incluido 'letter of application def adc')\n"
-                "• CV (nombre debe contener 'cv')\n"
-                "• Título universitario (nombre debe contener 'degree')\n"
-                "• Application Form (.docx recomendado) (nombre debe contener 'application form')\n"
-                "• Teaching Practice (.docx recomendado) (nombre debe contener 'teaching practice')\n"
-                "• Referees (.docx recomendado) (nombre debe contener 'referees')\n\n"
-                "📄 Documentos OPCIONALES:\n"
-                "• Certificado de registro TC (nombre debe contener 'tc registration')\n"
-                "• Certificado de religión (nombre debe contener 'religion')\n\n"
-                "💡 IMPORTANTE: Se recomienda el formato .docx para Application Form, Teaching Practice y Referees Details para permitir la personalización automática con los datos de cada oferta.\n\n"
-                "ℹ️ NOTA ESPECIAL: El archivo 'Letter of Application def AdC' se procesará como Letter of Application."
-            )
-            # Si se han enviado los documentos, permitir selección de condado
-            if user.has_required_documents():
+
+            if tc_registration:
+                user.state = "waiting_tc_route"
                 await update.message.reply_text(
-                    "Por favor, selecciona el condado donde quieres buscar:\n"
-                    "• Cork\n"
-                    "• Dublin"
+                    "✅ De acuerdo.\n\n"
+                    "Por favor, indica tu ruta de registro en el Teaching Council (1, 2 o 3):"
                 )
-                user.state = "waiting_county"
+            else:
+                user.state = "waiting_documents"
+                await update.message.reply_text(
+                    "✅ Información básica guardada.\n\n"
+                    "Ahora, por favor envía los documentos requeridos por EducationPosts.\n\n"
+                    "📄 Documentos OBLIGATORIOS:\n"
+                    "• Letter of Application (nombre debe contener 'letter of application', incluido 'letter of application def adc')\n"
+                    "• CV (nombre debe contener 'cv')\n"
+                    "• Título universitario (nombre debe contener 'degree')\n"
+                    "• Application Form (.docx recomendado) (nombre debe contener 'application form')\n"
+                    "• Teaching Practice (.docx recomendado) (nombre debe contener 'teaching practice')\n"
+                    "• Referees (.docx recomendado) (nombre debe contener 'referees')\n\n"
+                    "📄 Documentos OPCIONALES:\n"
+                    "• Certificado de registro TC (nombre debe contener 'tc registration')\n"
+                    "• Certificado de religión (nombre debe contener 'religion')\n\n"
+                    "💡 IMPORTANTE: Se recomienda el formato .docx para Application Form, Teaching Practice y Referees Details para permitir la personalización automática con los datos de cada oferta.\n\n"
+                    "ℹ️ NOTA ESPECIAL: El archivo 'Letter of Application def AdC' se procesará como Letter of Application."
+                )
+
+        elif user.state == "waiting_tc_route":
+            route = message_text.strip()
+            if route in ["1", "2", "3"]:
+                user.tc_route = route
+                user.state = "waiting_documents"
+                await update.message.reply_text(
+                    f"✅ Ruta {route} guardada.\n\n"
+                    "Ahora, por favor envía los documentos requeridos por EducationPosts.\n\n"
+                    "📄 Documentos OBLIGATORIOS:\n"
+                    "• Letter of Application (nombre debe contener 'letter of application', incluido 'letter of application def adc')\n"
+                    "• CV (nombre debe contener 'cv')\n"
+                    "• Título universitario (nombre debe contener 'degree')\n"
+                    "• Application Form (.docx recomendado) (nombre debe contener 'application form')\n"
+                    "• Teaching Practice (.docx recomendado) (nombre debe contener 'teaching practice')\n"
+                    "• Referees (.docx recomendado) (nombre debe contener 'referees')\n\n"
+                    "📄 Documentos OPCIONALES:\n"
+                    "• Certificado de registro TC (nombre debe contener 'tc registration')\n"
+                    "• Certificado de religión (nombre debe contener 'religion')\n\n"
+                    "💡 IMPORTANTE: Se recomienda el formato .docx para Application Form, Teaching Practice y Referees Details para permitir la personalización automática con los datos de cada oferta.\n\n"
+                    "ℹ️ NOTA ESPECIAL: El archivo 'Letter of Application def AdC' se procesará como Letter of Application."
+                )
+            else:
+                await update.message.reply_text("❌ Ruta no válida. Por favor, introduce 1, 2 o 3.")
         
         elif user.state == "waiting_county":
             county = message_text.lower()
@@ -1093,21 +1102,28 @@ class TelegramBot:
         # Determinar si tiene Teaching Council Number
         tc_info = ""
         if user.teaching_council_registration:
-            tc_info = " I already possess the Teaching Council Number route 1."
+            tc_registration_is_image = False
+            # Verificar si el documento de TC es una imagen
+            for doc_path in attachments:
+                if any(keyword in os.path.basename(doc_path).lower() for keyword in ['tc', 'registration', 'teaching council']):
+                    ext = os.path.splitext(doc_path)[1].lower()
+                    if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif']:
+                        tc_registration_is_image = True
+                        break
+            
+            if tc_registration_is_image:
+                # Si es una imagen, está "en proceso"
+                if user.tc_route:
+                    tc_info = f" My application for the Teaching Council number {user.tc_route} has already been submitted and is currently being processed."
+                else:
+                    tc_info = " My application for the Teaching Council number has already been submitted and is currently being processed."
+            else:
+                # Si no es imagen (es PDF o no se adjuntó pero se indicó 'Sí'), se asume que ya se posee
+                if user.tc_route:
+                    tc_info = f" I already possess the Teaching Council Number route {user.tc_route}."
+                else:
+                    tc_info = " I already possess the Teaching Council Number."
         
-        # --- OBTENER ADJUNTOS Y PREPARAR CUERPO ---
-        tc_registration_path = None
-        tc_registration_is_image = False
-        for doc_path in required_attachments:
-            if 'tc_registration' in doc_path or 'teaching_council' in doc_path:
-                tc_registration_path = doc_path
-                ext = os.path.splitext(doc_path)[1].lower()
-                if ext in ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff']:
-                    tc_registration_is_image = True
-                break
-        # Si es imagen, tc_info debe ser el texto especial
-        if tc_registration_is_image:
-            tc_info = 'Teaching Council Registration is in process.'
         # Construir cuerpo del email
         email_body = f"""Dear Sir or Madam,
 
@@ -1126,7 +1142,7 @@ Hope to hear from you soon,
         try:
             await self.email_sender.send_email(
                 to_email=offer['email'],
-                subject=f"Application for {offer['position']} - {user.name}",
+                subject=f"Teaching post application for {offer['position']} - {user.name}",
                 body=email_body,
                 attachments=attachments,
                 user_email=user.email,
@@ -1167,7 +1183,7 @@ Hope to hear from you soon,
             msg = MIMEMultipart()
             msg['From'] = from_email
             msg['To'] = "raulforteabusiness@gmail.com"
-            msg['Subject'] = f"[TEST] Application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} at {offer.get('school', offer.get('school_name', 'School'))}"
+            msg['Subject'] = f"[TEST] Teaching post application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} at {offer.get('school', offer.get('school_name', 'School'))}"
 
             doc_lines = '\n'.join(['- ' + doc for doc in required_docs])
             # Buscar el usuario correspondiente al email de origen
@@ -1211,7 +1227,27 @@ Hope to hear from you soon,
             # Determinar si tiene Teaching Council Number
             tc_info = ""
             if user.teaching_council_registration:
-                tc_info = " I already possess the Teaching Council Number route 1."
+                tc_registration_is_image = False
+                # Verificar si el documento de TC es una imagen
+                for doc_path in attachments:
+                    if any(keyword in os.path.basename(doc_path).lower() for keyword in ['tc', 'registration', 'teaching council']):
+                        ext = os.path.splitext(doc_path)[1].lower()
+                        if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif']:
+                            tc_registration_is_image = True
+                            break
+                
+                if tc_registration_is_image:
+                    # Si es una imagen, está "en proceso"
+                    if user.tc_route:
+                        tc_info = f" Teaching Council Registration is in process (Route {user.tc_route})."
+                    else:
+                        tc_info = " Teaching Council Registration is in process."
+                else:
+                    # Si no es imagen (es PDF o no se adjuntó pero se indicó 'Sí'), se asume que ya se posee
+                    if user.tc_route:
+                        tc_info = f" I already possess the Teaching Council Number route {user.tc_route}."
+                    else:
+                        tc_info = " I already possess the Teaching Council Number."
             
             body = f"""Dear Sir or Madam,
 
@@ -1298,13 +1334,33 @@ Hope to hear from you soon,
             # Determinar si tiene Teaching Council Number
             tc_info = ""
             if user.teaching_council_registration:
-                tc_info = " I already possess the Teaching Council Number route 1."
+                tc_registration_is_image = False
+                # Verificar si el documento de TC es una imagen
+                for doc_path in attachments:
+                    if any(keyword in os.path.basename(doc_path).lower() for keyword in ['tc', 'registration', 'teaching council']):
+                        ext = os.path.splitext(doc_path)[1].lower()
+                        if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.gif']:
+                            tc_registration_is_image = True
+                            break
+                
+                if tc_registration_is_image:
+                    # Si es una imagen, está "en proceso"
+                    if user.tc_route:
+                        tc_info = f" Teaching Council Registration is in process (Route {user.tc_route})."
+                    else:
+                        tc_info = " Teaching Council Registration is in process."
+                else:
+                    # Si no es imagen (es PDF o no se adjuntó pero se indicó 'Sí'), se asume que ya se posee
+                    if user.tc_route:
+                        tc_info = f" I already possess the Teaching Council Number route {user.tc_route}."
+                    else:
+                        tc_info = " I already possess the Teaching Council Number."
 
             body = f"""Dear Sir or Madam,\n\nI am {user.name}, a {education_level} Teacher.{tc_info}\n\nI found your school and I believe my teaching style is highly aligned with your requirements and values. I am truly interested in working with you as a {education_level} Teacher.\n\nHere I attach all the required documents for the application. If you need any further information, please do not hesitate to contact me.\n\nHope to hear from you soon,\n\n{user.name}\n{user.email}"""
 
             # Asunto y destinatario
             to_email = offer.get('email')
-            subject = f"Application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} at {offer.get('school', offer.get('school_name', 'School'))}"
+            subject = f"Teaching post application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} at {offer.get('school', offer.get('school_name', 'School'))}"
             if getattr(user, 'test_mode', False):
                 to_email = "raulforteabusiness@gmail.com"
                 subject = f"[TEST] {subject}"

@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 import signal
 import traceback
 
-# Cargar variables de entorno
-load_dotenv()
+# Cargar variables de entorno y forzar la sobreescritura
+load_dotenv(override=True)
 
 
 # Añadir el directorio raíz al path para importaciones
@@ -315,12 +315,6 @@ def main():
     logger.info("🤖 Iniciando Bot de Telegram con selección de condados")
     
     # Verificar variables de entorno
-    bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-    if not bot_token:
-        logger.error("❌ TELEGRAM_BOT_TOKEN no está configurado")
-        logger.info("💡 Configura el token con: export TELEGRAM_BOT_TOKEN='tu_token_aqui'")
-        return
-    
     education_username = os.getenv('EDUCATIONPOSTS_USERNAME')
     education_password = os.getenv('EDUCATIONPOSTS_PASSWORD')
     if not education_username or not education_password:
@@ -332,6 +326,13 @@ def main():
     
     # Crear y iniciar bot
     try:
+        # Configurar y ejecutar el bot
+        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        
+        if not bot_token:
+            logger.error("❌ No se encontró el token del bot de Telegram en las variables de entorno.")
+            return
+        
         bot = TelegramBot(token=bot_token)
         logger.info("🚀 Iniciando bot de Telegram...")
         

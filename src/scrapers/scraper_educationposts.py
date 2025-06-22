@@ -278,16 +278,17 @@ class EducationPosts:
                         str(detailed.get('required subject', '')),
                         str(detailed.get('subjects', ''))
                     ]).lower()
-                    # Aplica el filtro robusto
-                    if ("teacher" in all_text and
-                        "principal teacher" not in all_text and
-                        "special school teacher placement" not in all_text):
-                        vacancy_name = "Teacher"
-                    else:
+                    
+                    # El filtro robusto decide si la oferta es válida, pero no debe cambiar el nombre de la vacante
+                    if not ("teacher" in all_text and
+                            "principal teacher" not in all_text and
+                            "special school teacher placement" not in all_text):
                         log.info(f"⛔ Oferta filtrada (vacante no compatible): {all_text}")
                         continue
-                    # El título de la oferta debe mostrar el nombre de la escuela y el tipo de vacante
-                    detailed['vacancy'] = vacancy_name
+                        
+                    # No sobreescribir la vacante, ya fue extraída correctamente
+                    # detailed['vacancy'] = "Teacher" # <-- Eliminado
+                    
                     detailed_offers.append(detailed)
                     log.info(f"✅ Oferta {i} procesada correctamente")
                 else:
@@ -419,7 +420,7 @@ class EducationPosts:
                     log.warning(f"Error al obtener página {page}: Status {r.status}")
                     return []
                 html = await r.text()
-                
+
             # Esperar un tiempo aleatorio para evitar ser bloqueados
             await rand_sleep(safe_mode=self.safe_mode)
             soup = BeautifulSoup(html, "html.parser")
