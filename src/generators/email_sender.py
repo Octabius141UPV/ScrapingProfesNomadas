@@ -130,8 +130,9 @@ class EmailSender:
                 # Si es un PDF, intentar extraer el número
                 elif tc_document_path.lower().endswith('.pdf'):
                     tc_number = self._extract_tc_number_from_pdf(tc_document_path)
+                    tc_route = user_data.get('tc_route', '1')  # Default a ruta 1 si no se especifica
                     if tc_number:
-                        tc_info_text = f"I already possess the Teaching Council Number route 1 ({tc_number})."
+                        tc_info_text = f"I already possess the Teaching Council Number route {tc_route} ({tc_number})."
                         logger.info(f"TC Number extraído del PDF: {tc_number}")
                     else:
                         # Fallback si no se puede extraer el número del PDF
@@ -140,20 +141,21 @@ class EmailSender:
             # Si no hay documento, usar el número de TC si está en los datos del usuario
             elif user_data.get('teaching_council_registration'):
                 tc_number = user_data.get('teaching_council_registration')
-                tc_info_text = f"I already possess the Teaching Council Number route 1 ({tc_number})."
+                tc_route = user_data.get('tc_route', '1')  # Default a ruta 1 si no se especifica
+                tc_info_text = f"I already possess the Teaching Council Number route {tc_route} ({tc_number})."
                 logger.info(f"Usando TC Number de los datos de usuario: {tc_number}")
 
             # Reemplazar la sección del TC en la plantilla
             if tc_info_text:
                 full_sentence = f"I am {user_data.get('name', '[nombre]')}, a Primary Education Teacher. {tc_info_text}"
                 formatted_template = template.replace(
-                    "I am [nombre], a Primary Education Teacher. [I already possess the Teaching Council Number route 1 (en caso de que ya lo tengan)]",
+                    "I am [nombre], a Primary Education Teacher. [I already possess the Teaching Council Number (en caso de que ya lo tengan)]",
                     full_sentence
                 )
             else:
                 # Si no hay información del TC, quitar la parte opcional
                 formatted_template = template.replace(
-                    "I am [nombre], a Primary Education Teacher. [I already possess the Teaching Council Number route 1 (en caso de que ya lo tengan)]",
+                    "I am [nombre], a Primary Education Teacher. [I already possess the Teaching Council Number (en caso de que ya lo tengan)]",
                     f"I am {user_data.get('name', '[nombre]')}, a Primary Education Teacher."
                 )
 

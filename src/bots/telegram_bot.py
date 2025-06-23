@@ -503,7 +503,7 @@ class TelegramBot:
                 user.state = "waiting_tc_route"
                 await update.message.reply_text(
                     "✅ De acuerdo.\n\n"
-                    "Por favor, indica tu ruta de registro en el Teaching Council (1, 2 o 3):"
+                    "Por favor, indica tu ruta de registro en el Teaching Council (1, 2, 3 o 4):"
                 )
             else:
                 user.state = "waiting_documents"
@@ -526,7 +526,7 @@ class TelegramBot:
 
         elif user.state == "waiting_tc_route":
             route = message_text.strip()
-            if route in ["1", "2", "3"]:
+            if route in ["1", "2", "3", "4"]:
                 user.tc_route = route
                 user.state = "waiting_documents"
                 await update.message.reply_text(
@@ -546,7 +546,53 @@ class TelegramBot:
                     "ℹ️ NOTA ESPECIAL: El archivo 'Letter of Application def AdC' se procesará como Letter of Application."
                 )
             else:
-                await update.message.reply_text("❌ Ruta no válida. Por favor, introduce 1, 2 o 3.")
+                await update.message.reply_text("❌ Ruta no válida. Por favor, introduce 1, 2, 3 o 4.")
+        
+        elif user.state == "waiting_tc_route_from_doc":
+            route = message_text.strip()
+            if route in ["1", "2", "3", "4"]:
+                user.tc_route = route
+                await update.message.reply_text(
+                    f"✅ Ruta {route} guardada.\n\n"
+                    f"My application for the Teaching Council number {route} has already been submitted and is currently being processed."
+                )
+                # Continuar con la verificación de documentos obligatorios
+                missing_docs = []
+                required_docs = {
+                    'letter_of_application': "Letter of Application",
+                    'cv': "CV", 
+                    'degree': "Título universitario (Degree)",
+                    'application_form': "Standard Application Form",
+                    'teaching_practice': "Teaching Practice",
+                    'referees': "Referees"
+                }
+                
+                for doc_key, doc_name in required_docs.items():
+                    if not user.documents[doc_key]:
+                        missing_docs.append(doc_name)
+                
+                if missing_docs:
+                    await update.message.reply_text(
+                        f"Faltan documentos obligatorios:\n" + 
+                        "\n".join(f"• {doc}" for doc in missing_docs) +
+                        "\n\nPor favor, súbelos para continuar."
+                    )
+                    user.state = "waiting_documents"
+                else:
+                    # Todos los documentos obligatorios recibidos
+                    keyboard = [
+                        [InlineKeyboardButton("Cork", callback_data="cork")],
+                        [InlineKeyboardButton("Dublin", callback_data="dublin")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(
+                        "✅ Todos los documentos obligatorios han sido recibidos.\n\n"
+                        "Por favor, selecciona el condado donde quieres buscar:",
+                        reply_markup=reply_markup
+                    )
+                    user.state = "waiting_county"
+            else:
+                await update.message.reply_text("❌ Ruta no válida. Por favor, introduce 1, 2, 3 o 4.")
         
         elif user.state == "waiting_county":
             county = message_text.lower()
@@ -1389,7 +1435,8 @@ Hope to hear from you soon,
                 'email': user.email,
                 'email_password': user.email_password,
                 'documents': [],
-                'teaching_council_registration': user.teaching_council_registration
+                'teaching_council_registration': user.teaching_council_registration,
+                'tc_route': user.tc_route  # Agregar la ruta del Teaching Council
             }
             for doc_path in attachments:
                 user_data['documents'].append({'path': doc_path, 'filename': os.path.basename(doc_path)})
