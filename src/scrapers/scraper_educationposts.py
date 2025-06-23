@@ -1062,6 +1062,14 @@ class EducationPosts:
                 log.debug(f"No se encontró email para la oferta: {offer.get('school', 'Sin escuela')}")
                 # NO devolver None - siempre devolver la información completa aunque no haya email
             
+            # NUEVO: Buscar si hay un enlace 'Apply for this Post' y guardarlo (versión ultra robusta)
+            pattern = re.compile(r'apply\s*for\s*this\s*post', re.IGNORECASE)
+            for a in soup.find_all('a'):
+                if a.text and pattern.search(a.text.replace('\n', ' ').replace('\r', ' ').strip()):
+                    offer['apply_link'] = urljoin(offer['url'], a['href'])
+                    log.info(f"Enlace de aplicación detectado: {offer['apply_link']}")
+                    break
+
             # Log de información completa extraída (incluyendo requirements completos)
             title = f"{offer.get('school', 'N/A')} - {offer.get('vacancy', 'N/A')}"
             requirements_text = offer.get('requirements', '')
@@ -1350,6 +1358,12 @@ async def run():
         print(f"Vacante: {o.get('vacancy', 'N/A')}")
         print(f"Email: {o.get('email', 'N/A')}")
         print(f"URL: {o.get('url', 'N/A')}")
+
+    # Guardar el HTML de la oferta 239126 para depuración
+    if o.get('url', '').endswith('/239126'):
+        with open('temp/oferta_239126_scraper.html', 'w', encoding='utf-8') as f:
+            f.write(response.text)
+        log.info('HTML de la oferta 239126 guardado en temp/oferta_239126_scraper.html')
 
 if __name__ == "__main__":
     asyncio.run(run())

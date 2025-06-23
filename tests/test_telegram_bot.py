@@ -5,6 +5,9 @@ Script de prueba para verificar el bot de Telegram con selección de condados.
 import os
 import sys
 from dotenv import load_dotenv
+import unittest
+from unittest.mock import MagicMock, patch, AsyncMock
+import asyncio
 
 # Cargar variables de entorno
 load_dotenv()
@@ -72,17 +75,46 @@ def show_usage():
 💡 **Tip:** Seleccionar "Cork + Dublin" te dará las mejores oportunidades.
 """)
 
+class TestTelegramBotApplyLink(unittest.TestCase):
+    def setUp(self):
+        from src.bots.telegram_bot import TelegramBot, UserData
+        self.TelegramBot = TelegramBot
+        self.UserData = UserData
+        self.bot = TelegramBot("dummy_token")
+        # Simular usuario
+        self.user = UserData()
+        self.user.name = "Test User"
+        self.user.email = "test@example.com"
+        self.user.chat_id = 123456
+        self.bot.user_data[1] = self.user
+
+    def test_apply_link_offer(self):
+        # Oferta con apply_link
+        offer = {
+            'school': 'Fake School',
+            'vacancy': 'Teacher',
+            'apply_link': 'https://www.educationposts.ie/post/apply/239126'
+        }
+        # Mock de send_message
+        self.bot.application = MagicMock()
+        self.bot.application.bot = MagicMock()
+        self.bot.application.bot.send_message = AsyncMock()
+        # Ejecutar
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(
+            self.bot.send_application_email_for_offer(offer, self.user.email, "irrelevant")
+        )
+        # Debe devolver False (no se envía email)
+        self.assertFalse(result)
+        # Debe haberse llamado send_message con el enlace
+        self.bot.application.bot.send_message.assert_awaited_with(
+            chat_id=self.user.chat_id,
+            text=unittest.mock.ANY
+        )
+        # El mensaje debe contener el enlace
+        called_args = self.bot.application.bot.send_message.await_args.kwargs
+        self.assertIn("apply manually", called_args['text'].lower() or "aplica manualmente" in called_args['text'].lower())
+        self.assertIn(offer['apply_link'], called_args['text'])
+
 if __name__ == "__main__":
-    print("🤖 Test del Bot de Telegram - ScrapingProfesNomadas")
-    print("=" * 50)
-    
-    if test_environment():
-        show_usage()
-        print("\n🚀 Para iniciar el bot, ejecuta:")
-        print("   python scrape_all_safe.py")
-    else:
-        print("\n❌ Configura las variables de entorno primero:")
-        print("   - TELEGRAM_BOT_TOKEN")
-        print("   - EDUCATIONPOSTS_USERNAME") 
-        print("   - EDUCATIONPOSTS_PASSWORD")
-        print("\nO crea un archivo .env con estas variables.")
+    unittest.main()

@@ -1313,6 +1313,29 @@ Hope to hear from you soon,
         Envía el email de aplicación real para una oferta específica.
         Si falta algún documento requerido, NO envía el email ni registra en Firebase.
         """
+        # NUEVO: Si la oferta tiene un enlace de aplicación externo, avisar al usuario y no enviar email
+        if offer.get('apply_link'):
+            user = None
+            for u in self.user_data.values():
+                if u.email and u.email.strip().lower() == from_email.strip().lower():
+                    user = u
+                    break
+            if user and hasattr(user, 'chat_id') and user.chat_id:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                loop.create_task(
+                    self.application.bot.send_message(
+                        chat_id=user.chat_id,
+                        text=(
+                            "ℹ️ Esta oferta requiere que apliques manualmente a través de la web. "
+                            "No es posible enviar la aplicación por email.\n\n"
+                            f"Por favor, haz clic en el siguiente enlace y sigue las instrucciones para aplicar: \n{offer['url']}"
+                        )
+                    )
+                )
+            self.logger.info(f"Oferta con apply_link detectada, no se envía email: {offer.get('apply_link')} (se muestra url de la vacante: {offer.get('url')})")
+            return False
+
         try:
             # Buscar el usuario correspondiente al email de origen
             user = None
@@ -1405,6 +1428,9 @@ Hope to hear from you soon,
                         if not ext: # si no tiene extensión, forzar pdf
                             ext = '.pdf'
                         final_filename = f"TC_Registration{ext}"
+                    elif 'application_form_' in doc_path:
+                        # Application Form personalizado generado
+                        final_filename = "Application Form.pdf"
                     
                     with open(doc_path, 'rb') as f:
                         part = MIMEBase('application', 'octet-stream')
@@ -1426,8 +1452,8 @@ Hope to hear from you soon,
                 self.logger.error(f"Error al enviar email: {str(e)}")
                 success = False
 
-            # Registrar la aplicación en Firebase (ahora también en modo test)
-            if success:
+            # Registrar la aplicación en Firebase (solo si no está en modo test)
+            if success and not getattr(user, 'test_mode', False):
                 offer_id = offer.get('id') or offer.get('vacancy_id') or offer.get('url', '').split('/')[-1] or 'unknown'
                 mark_vacancy_as_applied(user.email, offer_id, data={
                     'school': offer.get('school', ''),
@@ -1707,37 +1733,39 @@ Hope to hear from you soon,
                     continue  # Saltar a la siguiente vacante
                 # Si no falta nada, procesar la vacante normalmente (enviar email, simular, etc)
                 # ... (resto del procesamiento de la vacante) ...
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"ofertas_{timestamp}.json"
-            filepath = os.path.join("data", filename)
-            os.makedirs("data", exist_ok=True)
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(offers, f, ensure_ascii=False, indent=2)
-            doc_summary = {}
-            for offer in offers:
-                for doc in offer['required_documents']:
-                    if doc not in doc_summary:
-                        doc_summary[doc] = 0
-                    doc_summary[doc] += 1
-            summary_text = f"🎉 Análisis completado!\n\n"
-            summary_text += f"📊 Resumen final:\n"
-            summary_text += f"- Total ofertas: {len(offers)}\n"
-            summary_text += f"- Ofertas con email: {len([o for o in offers if o.get('email')])}\n"
-            summary_text += f"- Ofertas sin email: {len([o for o in offers if not o.get('email')])}\n\n"
-            summary_text += f"📄 Documentos más requeridos:\n"
-            for doc, count in doc_summary.items():
-                summary_text += f"- {doc}: {count} ofertas\n"
-            summary_text += f"\n💾 Resultados guardados en: {filepath}"
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=summary_text
-            )
-            with open(filepath, 'rb') as f:
-                await context.bot.send_document(
+            # Solo en modo test se genera y envía el JSON de vacantes
+            if getattr(user, 'test_mode', False):
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"ofertas_{timestamp}.json"
+                filepath = os.path.join("data", filename)
+                os.makedirs("data", exist_ok=True)
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(offers, f, ensure_ascii=False, indent=2)
+                doc_summary = {}
+                for offer in offers:
+                    for doc in offer['required_documents']:
+                        if doc not in doc_summary:
+                            doc_summary[doc] = 0
+                        doc_summary[doc] += 1
+                summary_text = f"🎉 Análisis completado!\n\n"
+                summary_text += f"📊 Resumen final:\n"
+                summary_text += f"- Total ofertas: {len(offers)}\n"
+                summary_text += f"- Ofertas con email: {len([o for o in offers if o.get('email')])}\n"
+                summary_text += f"- Ofertas sin email: {len([o for o in offers if not o.get('email')])}\n\n"
+                summary_text += f"📄 Documentos más requeridos:\n"
+                for doc, count in doc_summary.items():
+                    summary_text += f"- {doc}: {count} ofertas\n"
+                summary_text += f"\n💾 Resultados guardados en: {filepath}"
+                await context.bot.send_message(
                     chat_id=user_id,
-                    document=f,
-                    filename=filename
+                    text=summary_text
                 )
+                with open(filepath, 'rb') as f:
+                    await context.bot.send_document(
+                        chat_id=user_id,
+                        document=f,
+                        filename=filename
+                    )
             # Enviar email de prueba automáticamente con la primera oferta válida
             await self.simulate_application(
                 offers,

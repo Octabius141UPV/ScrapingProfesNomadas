@@ -84,6 +84,7 @@ config_local.py
 settings_local.py
 ofertas_*.json
 ofertas_test_*.json
+vacantes_*.json
 scraper_test.log
 
 # Backups
@@ -91,3 +92,5 @@ scraper_test.log
 *.backup
 
 config.json
+
+vacan
