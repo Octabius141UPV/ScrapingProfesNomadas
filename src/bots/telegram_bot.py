@@ -1565,24 +1565,28 @@ Hope to hear from you soon,
         )
         # Al finalizar todos los envíos, limpiar completamente la carpeta temp
         self.clean_temp_folder()
-        success = await self.send_test_email(
-            offer=offer,
-            from_email=from_email,
-            from_password=from_password
-        )
-        if success:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="✅ Email de prueba enviado correctamente:\n"
-                     "📧 Email enviado a raulforteabusiness@gmail.com\n"
-                     "📎 Incluye todos los detalles de la oferta\n"
-                     "🔍 [TEST] en el asunto del email"
+        
+        # Solo enviar email de prueba si el usuario está en modo test
+        user = self.user_data[user_id]
+        if getattr(user, 'test_mode', False):
+            success = await self.send_test_email(
+                offer=offer,
+                from_email=from_email,
+                from_password=from_password
             )
-        else:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="❌ Error al enviar el email de prueba. Por favor, verifica las credenciales."
-            )
+            if success:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="✅ Email de prueba enviado correctamente:\n"
+                         "📧 Email enviado a raulforteabusiness@gmail.com\n"
+                         "📎 Incluye todos los detalles de la oferta\n"
+                         "🔍 [TEST] en el asunto del email"
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ Error al enviar el email de prueba. Por favor, verifica las credenciales."
+                )
 
     async def run_scraping_process(self, user_id: int, context) -> None:
         if self.is_scraping:
