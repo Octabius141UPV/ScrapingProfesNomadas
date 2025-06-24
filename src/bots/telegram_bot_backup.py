@@ -116,7 +116,7 @@ class TelegramBot:
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(CallbackQueryHandler(self.handle_county_selection, pattern="^(cork|dublin|ambos|toda irlanda)$"))
-        self.application.add_handler(CallbackQueryHandler(self.handle_dublin_zone_selection, pattern="^dublin_(1|2|3|4|5|6|6w|7|8|9|10|11|12|13|14|15|16|17|18|20|22|24|all)$"))
+        self.application.add_handler(CallbackQueryHandler(self.handle_dublin_zone_selection, pattern="^dublin_(1|2|3|4|5|6|6w|7|8|9|10|11|12|13|14|15|16|17|18|20|22|23|24|all)$"))
         self.application.add_handler(CallbackQueryHandler(self.handle_education_level_selection, pattern="^(pre-school|primary|post-primary)$"))
         
         # Configurar manejador de errores
@@ -602,6 +602,7 @@ class TelegramBot:
                 ],
                 [
                     InlineKeyboardButton("Dublin 22", callback_data="dublin_22"),
+                    InlineKeyboardButton("Dublin County", callback_data="dublin_23"),
                     InlineKeyboardButton("Dublin 24", callback_data="dublin_24"),
                     InlineKeyboardButton("Todo Dublin", callback_data="dublin_all")
                 ]
@@ -676,7 +677,7 @@ class TelegramBot:
             "dublin_12": "Dublin 12", "dublin_13": "Dublin 13", "dublin_14": "Dublin 14",
             "dublin_15": "Dublin 15", "dublin_16": "Dublin 16", "dublin_17": "Dublin 17",
             "dublin_18": "Dublin 18", "dublin_20": "Dublin 20", "dublin_22": "Dublin 22",
-            "dublin_24": "Dublin 24", "dublin_all": "Todo Dublin"
+            "dublin_23": "Dublin County", "dublin_24": "Dublin 24", "dublin_all": "Todo Dublin"
         }
         
         user.dublin_zone = zone.replace("dublin_", "")  # Almacenar sin el prefijo "dublin_"
@@ -1364,7 +1365,7 @@ Best regards,
                 "8": "Dublin 8", "9": "Dublin 9", "10": "Dublin 10", "11": "Dublin 11",
                 "12": "Dublin 12", "13": "Dublin 13", "14": "Dublin 14", "15": "Dublin 15",
                 "16": "Dublin 16", "17": "Dublin 17", "18": "Dublin 18", "20": "Dublin 20",
-                "22": "Dublin 22", "24": "Dublin 24", "all": "Todo Dublin"
+                "22": "Dublin 22", "23": "Dublin 23", "24": "Dublin 24", "all": "Todo Dublin"
             }
             location_info = f" ({zone_display_names.get(user.dublin_zone, 'Todo Dublin')})"
         

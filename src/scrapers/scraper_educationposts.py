@@ -1392,7 +1392,8 @@ DUBLIN_DISTRICTS = {
     "19": "Dublin 18", # Código 19 = Dublin 18
     "20": "Dublin 20", # Código 20 = Dublin 20
     "21": "Dublin 22", # Código 21 = Dublin 22
-    "22": "Dublin 24"  # Código 22 = Dublin 24
+    "22": "Dublin 24", # Código 22 = Dublin 24
+    "23": "Dublin County"  # Código 23 = Dublin County
 }
 # Agrupación de distritos por zonas geográficas
 # Los distritos se mapean a sus códigos reales en la API
@@ -1418,6 +1419,7 @@ DUBLIN_ZONES = {
     "18": ["19"],  # Dublin 18 usa el código 19
     "20": ["20"],  # Dublin 20 usa el código 20
     "22": ["21"],  # Dublin 22 usa el código 21
+    "23": ["23"],  # Dublin 23 usa el código 23
     "24": ["22"],  # Dublin 24 usa el código 22
     "all": ""      # Todo Dublin
 }
