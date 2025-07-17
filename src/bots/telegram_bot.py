@@ -43,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ID del usuario autorizado
-AUTHORIZED_USER_IDS = [1070017515, 7034549850]
+AUTHORIZED_USER_IDS = [1070017515, 7034549850, 6334888548, 6386385237]
 
 class UserData:
     def __init__(self):
