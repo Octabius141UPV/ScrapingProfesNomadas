@@ -4,6 +4,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+import mimetypes
+import html
 import os
 from typing import Dict, List, Optional, Any
 import asyncio
@@ -21,7 +23,7 @@ class EmailSender:
         self.email_address = None
         self.email_password = None
             
-    async def send_application_email(self, user_data: Dict, offer: Dict, excel_path: str = None, application_form_pdf: str = None, body: str = None) -> bool:
+    async def send_application_email(self, user_data: Dict, offer: Dict, excel_path: str = None, application_form_pdf: str = None, body: str = None, subject: str = None) -> bool:
         """
         Envía un email de solicitud personalizado para una oferta específica
         
@@ -44,7 +46,7 @@ class EmailSender:
             # Ya no usamos perfil de usuario basado en AI
             
             # Generar contenido del email
-            subject = self._generate_subject(user_data, offer)
+            subject = subject or self._generate_subject(user_data, offer)
             
             # Usar el body proporcionado si existe, si no, generar como antes
             if body is not None:
@@ -228,21 +230,36 @@ Best regards,
         Adjunta un documento al email
         """
         try:
-            with open(document['path'], 'rb') as attachment:
-                part = MIMEBase('application', 'octet-stream')
+            path = document['path']
+            filename = document.get('filename') or os.path.basename(path) or 'attachment'
+            # Si el archivo es PDF por ruta o nombre, asegura extensión .pdf
+            if (path.lower().endswith('.pdf') or filename.lower().endswith('.pdf')) and not filename.lower().endswith('.pdf'):
+                filename += '.pdf'
+
+            # Detectar tipo MIME
+            guessed_type = mimetypes.guess_type(filename)[0] or mimetypes.guess_type(path)[0]
+            if guessed_type:
+                maintype, subtype = guessed_type.split('/', 1)
+            else:
+                maintype, subtype = ('application', 'octet-stream')
+
+            with open(path, 'rb') as attachment:
+                part = MIMEBase(maintype, subtype)
                 part.set_payload(attachment.read())
-                
+
             encoders.encode_base64(part)
-            part.add_header(
-                'Content-Disposition',
-                f'attachment; filename= {document["filename"]}'
-            )
-            
+            # Content-Disposition con filename correcto evita "noname"
+            part.add_header('Content-Disposition', 'attachment', filename=filename)
+
             msg.attach(part)
-            logger.info(f"Documento adjuntado: {document['filename']}")
+            logger.info(f"Documento adjuntado: {filename}")
             
         except Exception as e:
-            logger.error(f"Error adjuntando documento {document['filename']}: {str(e)}")
+            try:
+                fn = document.get('filename', 'attachment')
+            except Exception:
+                fn = 'attachment'
+            logger.error(f"Error adjuntando documento {fn}: {str(e)}")
             
     async def _send_email(self, msg: MIMEMultipart, recipient: str) -> bool:
         """
@@ -332,6 +349,61 @@ ScrapingProfesNomadas Bot"""
             
         except Exception as e:
             logger.error(f"Error en email de prueba: {str(e)}")
+            return False
+
+    async def send_presentation_email(self, from_email: str, from_password: str, to_email: str, presentation_pdf_path: str, subject: Optional[str] = None, body: Optional[str] = None) -> bool:
+        """
+        Envía un email sencillo con un PDF de presentación adjunto.
+
+        Args:
+            from_email: Dirección del remitente (Gmail recomendado con contraseña de app)
+            from_password: Contraseña de aplicación del remitente
+            to_email: Destinatario
+            presentation_pdf_path: Ruta al PDF a adjuntar
+            subject: Asunto opcional
+            body: Cuerpo opcional (texto plano UTF-8)
+        """
+        try:
+            if not os.path.exists(presentation_pdf_path):
+                logger.error(f"PDF de presentación no encontrado: {presentation_pdf_path}")
+                return False
+            self.email_address = from_email
+            self.email_password = from_password
+            if not self.email_address or not self.email_password:
+                logger.error("Faltan credenciales para envío de presentación")
+                return False
+            # Contenedor mixto para adjuntos
+            msg = MIMEMultipart()
+            msg['From'] = self.email_address
+            msg['To'] = to_email
+            msg['Subject'] = subject or "Presentation – Profes Nómadas"
+            default_body = (
+                "Dear School Team,\n\n"
+                "I hope you are well. We are Profes Nómadas, a service that helps schools streamline teacher applications and communication. "
+                "Please find attached a short presentation with our details.\n\n"
+                "Kind regards,\nProfes Nómadas"
+            )
+            # Parte alternativa: texto plano + HTML para mejor render en Gmail
+            alternative = MIMEMultipart('alternative')
+            plain_text = body or default_body
+            alternative.attach(MIMEText(plain_text, 'plain', 'utf-8'))
+            # HTML simple, sin estilos agresivos; pre-wrap para saltos de línea
+            html_text = html.escape(plain_text).replace('\n', '<br>')
+            html_body = f"<div style=\"font-family:Arial,Helvetica,sans-serif; white-space:pre-wrap;\">{html_text}</div>"
+            alternative.attach(MIMEText(html_body, 'html', 'utf-8'))
+            msg.attach(alternative)
+            # Asegurar nombre con extensión .pdf para evitar "noname"
+            _base = os.path.basename(presentation_pdf_path) or 'ProfesNomadas_Presentation'
+            if not _base.lower().endswith('.pdf'):
+                _base += '.pdf'
+            attach_info = {
+                'path': presentation_pdf_path,
+                'filename': _base
+            }
+            self._attach_document(msg, attach_info)
+            return await self._send_email(msg, to_email)
+        except Exception as e:
+            logger.error(f"Error enviando presentación: {str(e)}")
             return False
     
     def _extract_tc_number_from_pdf(self, pdf_path: str) -> Optional[str]:

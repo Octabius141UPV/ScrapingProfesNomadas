@@ -4,6 +4,7 @@ import os
 import json
 from dotenv import load_dotenv
 import codecs
+from datetime import datetime
 
 # Cargar variables de entorno y forzar la sobreescritura
 load_dotenv(override=True)
@@ -70,3 +71,23 @@ def mark_vacancy_as_applied(user_email, vacante_id, data=None):
     """Marca una vacante como aplicada para el usuario."""
     ref = db.collection("aplicaciones").document(user_email).collection("vacantes").document(vacante_id)
     ref.set(data or {"applied": True}) 
+
+
+def get_presentation_recipients(sender_email: str):
+    """Devuelve un set de emails que ya recibieron la presentación para un remitente."""
+    if not db or not sender_email:
+        return set()
+    ref = db.collection("presentaciones").document(sender_email).collection("destinatarios")
+    docs = ref.stream()
+    return set(doc.id for doc in docs)
+
+
+def mark_presentation_sent(sender_email: str, recipient_email: str, data: dict = None):
+    """Marca que un destinatario ya recibió la presentación desde un remitente."""
+    if not db or not sender_email or not recipient_email:
+        return
+    payload = data or {}
+    if "sent_at" not in payload:
+        payload["sent_at"] = datetime.utcnow().isoformat()
+    ref = db.collection("presentaciones").document(sender_email).collection("destinatarios").document(recipient_email)
+    ref.set(payload)

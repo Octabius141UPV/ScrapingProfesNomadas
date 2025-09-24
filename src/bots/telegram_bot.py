@@ -7,8 +7,9 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import os
+from dotenv import load_dotenv
 import json
-from typing import Dict, Callable, List
+from typing import Dict, Callable, List, Optional
 import aiofiles
 import sys
 import asyncio
@@ -32,7 +33,13 @@ from src.utils.pdf_generator import PDFGenerator
 from src.utils.document_validator import DocumentValidator
 from src.scrapers.scraper_educationposts import EducationPosts
 import traceback
-from src.utils.firebase_manager import get_applied_vacancies, mark_vacancy_as_applied, upload_file_to_storage
+from src.utils.firebase_manager import (
+    get_applied_vacancies,
+    mark_vacancy_as_applied,
+    upload_file_to_storage,
+    get_presentation_recipients,
+    mark_presentation_sent,
+)
 from src.generators.email_sender import EmailSender
 
 # Configurar logging
@@ -65,7 +72,7 @@ class UserData:
         }
         self.excel_profile = None  # Ruta al archivo Excel con el perfil
         self.chat_id = None
-        self.state = "waiting_name"
+        self.state = None
         self.previous_state = None
         self.county_selection = None  # "cork", "dublin", "both"
         self.dublin_zone = None  # "north", "south", "west", "city_center", "all"
@@ -78,6 +85,8 @@ class UserData:
         self.teaching_council_registration = None
         self.tc_route = None
         self.test_mode = False  # Nuevo atributo para el modo test
+        self.presentation_mode = False  # Modo para enviar presentación de Profes Nómadas
+        self.presentation_pdf = None
 
     def has_required_documents(self):
         """Verifica si se han enviado todos los documentos obligatorios"""
@@ -119,6 +128,11 @@ class TelegramBot:
         Args:
             token: Token de autenticación del bot
         """
+        # Asegurar variables de entorno disponibles cuando se invoquen comandos (/presentacion)
+        try:
+            load_dotenv(override=True)
+        except Exception:
+            pass
         self.token = token
         self.application = Application.builder().token(token).build()
         
@@ -142,6 +156,8 @@ class TelegramBot:
         # Configurar manejadores de comandos
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CommandHandler("profesores", self.profesores_command))
+        self.application.add_handler(CommandHandler("presentacion", self.presentation_command))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(CallbackQueryHandler(self.handle_county_selection, pattern="^(cork|dublin|ambos|toda irlanda)$"))
@@ -192,24 +208,13 @@ class TelegramBot:
         
         welcome_message = (
             "👋 ¡Bienvenido al Bot de Scraping de EducationPosts!\n\n"
-            "Este bot te ayudará a realizar búsquedas de ofertas educativas en Irlanda y enviar tus aplicaciones.\n\n"
-            "📝 **REGLA IMPORTANTE: Todos los documentos deben estar en formato PDF.**\n"
-            "La única excepción es el TC Registration, que también puede ser una imagen (JPG, PNG).\n\n"
-            "El bot reconoce tus archivos por el nombre. Incluye estas palabras clave:\n\n"
-            "📄 **Documentos OBLIGATORIOS (PDF):**\n"
-            "• `letter of application`, `cover letter`\n"
-            "• `cv`, `resume`\n"
-            "• `degree`, `titulo`, `certificate`\n"
-            "• `application form`, `formulario`\n"
-            "• `teaching practice`, `practicas`\n"
-            "• `referees`, `references`\n\n"
-            "📄 **Documentos OPCIONALES:**\n"
-            "• `religion`, `religious` (PDF)\n"
-            "• `tc registration`, `teaching council` (PDF o Imagen)\n"
+            "Comandos principales:\n"
+            "• /presentacion – Enviar email de presentación con nuestro PDF\n"
+            "• /profesores – Buscar ofertas y enviar aplicaciones\n\n"
+            "Usa /help para ver la guía completa de documentos y reglas."
         )
         
         await update.message.reply_text(welcome_message)
-        await self.solicitar_nombre(update)
     
     async def solicitar_nombre(self, update: Update):
         """Solicita el nombre del usuario."""
@@ -243,6 +248,97 @@ class TelegramBot:
         )
         
         await update.message.reply_text(help_text)
+
+    async def profesores_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Activa el modo de envío de aplicaciones a ofertas (profesores) y explica el flujo."""
+        if not await self.is_authorized(update):
+            return
+        user_id = update.effective_user.id
+        if user_id not in self.user_data:
+            self.user_data[user_id] = UserData()
+            self.user_data[user_id].chat_id = update.effective_chat.id
+        user = self.user_data[user_id]
+
+        # Reset flags/estados de modo presentación
+        user.presentation_mode = False
+
+        texto = (
+            "📚 Modo Profesores (envío a ofertas)\n\n"
+            "Este modo te guía para reunir tus documentos, buscar ofertas y enviar tus aplicaciones.\n\n"
+            "Pasos del flujo:\n"
+            "1) Envía tus documentos requeridos (formato PDF): Letter of Application, CV, Degree, Application Form, Teaching Practice, Referees.\n"
+            "   - Opcionales: Teaching Council Registration (PDF o imagen) y Religion Certificate (PDF).\n"
+            "2) Indica tu nombre, email y contraseña de aplicación de Gmail (App Password).\n"
+            "3) Selecciona condado y nivel educativo.\n"
+            "4) El bot hará scraping de EducationPosts, analizará requerimientos y preparará adjuntos.\n"
+            "5) Podrás simular/envíar. Si usas /test, el envío se redirige a un email de prueba.\n\n"
+            "Consejos:\n"
+            "- Nombra bien tus archivos para que el bot los reconozca (letter of application, cv, degree, application form, teaching practice, referees).\n"
+            "- El Application Form debe ser PDF para personalizar POSITION ADVERTISED, School y ROLL NUMBER automáticamente.\n"
+        )
+        await update.message.reply_text(texto)
+        # A partir de aquí, iniciamos el flujo de datos personales del usuario
+        user.state = "waiting_name"
+        await update.message.reply_text("Para comenzar, por favor, dime tu nombre completo:")
+
+    async def presentation_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Inicia el flujo para enviar la presentación de Profes Nómadas a colegios."""
+        if not await self.is_authorized(update):
+            return
+        user_id = update.effective_user.id
+        if user_id not in self.user_data:
+            self.user_data[user_id] = UserData()
+            self.user_data[user_id].chat_id = update.effective_chat.id
+        user = self.user_data[user_id]
+
+        # Verificar credenciales básicas (usar .env como fallback si faltan)
+        if not getattr(user, 'email', None):
+            env_email = (
+                os.getenv('EMAIL_ADDRESS') or
+                os.getenv('EMAIL_USER') or
+                os.getenv('EMAIL')
+            )
+            if env_email:
+                user.email = env_email
+        if not getattr(user, 'email_password', None):
+            env_password = (
+                os.getenv('EMAIL_PASSWORD') or
+                os.getenv('EMAIL_PASS')
+            )
+            if env_password:
+                user.email_password = env_password
+
+        if not user.email or not user.email_password:
+            await update.message.reply_text(
+                "Para enviar la presentación necesitas registrar tu email y contraseña de aplicación.\n"
+                "Usa /start y completa Email y Contraseña de aplicación de Gmail."
+            )
+            return
+        user.presentation_mode = True
+
+        # Intentar detectar la presentación
+        pdf_path = self._discover_presentation_pdf()
+        if not pdf_path:
+            await update.message.reply_text(
+                "⚠️ No encontré el PDF de presentación.\n"
+                "Coloca el archivo en templates/ProfesNomadas_Presentacion.pdf, o en docs/ (por ejemplo 'Profes Nómadas Presentation.pdf'),\n"
+                "o configura la variable PRESENTATION_PDF_PATH en .env."
+            )
+        else:
+            user.presentation_pdf = pdf_path
+
+        # Pedir selección de condado
+        keyboard = [
+            [InlineKeyboardButton("Cork", callback_data="cork")],
+            [InlineKeyboardButton("Dublin", callback_data="dublin")],
+            [InlineKeyboardButton("Toda Irlanda", callback_data="toda irlanda")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "📣 Envío de presentación de Profes Nómadas\n\n"
+            "Selecciona el condado de destino:",
+            reply_markup=reply_markup
+        )
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Maneja la recepción de documentos"""
@@ -437,7 +533,6 @@ class TelegramBot:
         if user_id not in self.user_data:
             self.user_data[user_id] = UserData()
             self.user_data[user_id].chat_id = update.effective_chat.id
-            self.user_data[user_id].state = "waiting_name"
         
         user = self.user_data[user_id]
         message_text = update.message.text
@@ -737,18 +832,28 @@ class TelegramBot:
             )
         else:
             # Si es Cork u otra opción, continuar con el flujo normal
-            user.state = "waiting_education_level"
-            keyboard = [
-                [InlineKeyboardButton("Pre-school", callback_data="pre-school")],
-                [InlineKeyboardButton("Primary", callback_data="primary")],
-                [InlineKeyboardButton("Post-primary", callback_data="post-primary")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                f"✅ Condado seleccionado: {county.capitalize()}\n\n"
-                "Por favor, selecciona el nivel educativo:",
-                reply_markup=reply_markup
-            )
+            if getattr(user, 'presentation_mode', False):
+                # Modo presentación: usar nivel por defecto y arrancar envío
+                user.county_selection = county
+                user.education_level = user.education_level or "primary"
+                await query.edit_message_text(
+                    f"✅ Condado seleccionado: {county.capitalize()}\n\n"
+                    "Iniciando envío de presentación..."
+                )
+                await self.run_presentation_process(user_id, context)
+            else:
+                user.state = "waiting_education_level"
+                keyboard = [
+                    [InlineKeyboardButton("Pre-school", callback_data="pre-school")],
+                    [InlineKeyboardButton("Primary", callback_data="primary")],
+                    [InlineKeyboardButton("Post-primary", callback_data="post-primary")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    f"✅ Condado seleccionado: {county.capitalize()}\n\n"
+                    "Por favor, selecciona el nivel educativo:",
+                    reply_markup=reply_markup
+                )
 
     async def handle_education_level_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -803,21 +908,253 @@ class TelegramBot:
         }
         
         user.dublin_zone = zone.replace("dublin_", "")  # Almacenar sin el prefijo "dublin_"
-        user.state = "waiting_education_level"  # Continuar con el flujo normal
-        
-        # Mostrar opciones de nivel educativo
-        keyboard = [
-            [InlineKeyboardButton("Pre-school", callback_data="pre-school")],
-            [InlineKeyboardButton("Primary", callback_data="primary")],
-            [InlineKeyboardButton("Post-primary", callback_data="post-primary")]
+        if getattr(user, 'presentation_mode', False):
+            # Nivel por defecto para presentación
+            user.education_level = user.education_level or "primary"
+            await query.edit_message_text(
+                f"✅ Dublin - Distrito: {zone_mapping.get(zone, 'Desconocido')}\n\n"
+                "Iniciando envío de presentación..."
+            )
+            await self.run_presentation_process(user_id, context)
+        else:
+            user.state = "waiting_education_level"  # Continuar con el flujo normal
+            # Mostrar opciones de nivel educativo
+            keyboard = [
+                [InlineKeyboardButton("Pre-school", callback_data="pre-school")],
+                [InlineKeyboardButton("Primary", callback_data="primary")],
+                [InlineKeyboardButton("Post-primary", callback_data="post-primary")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"✅ Condado: Dublin - Distrito: {zone_mapping.get(zone, 'Desconocido')}\n\n"
+                "Por favor, selecciona el nivel educativo:",
+                reply_markup=reply_markup
+            )
+
+    def _discover_presentation_pdf(self) -> Optional[str]:
+        """Localiza el PDF de presentación en rutas conocidas o variable .env."""
+        path = os.getenv('PRESENTATION_PDF_PATH')
+        candidates = [
+            path,
+            os.path.join('templates', 'ProfesNomadas_Presentacion.pdf'),
+            os.path.join('templates', 'profesnomadas_presentation.pdf'),
+            os.path.join('assets', 'ProfesNomadas_Presentacion.pdf'),
+            os.path.join('assets', 'profesnomadas_presentation.pdf'),
+            # Candidatos comunes en docs/
+            os.path.join('docs', 'Profes Nómadas Presentation.pdf'),
+            os.path.join('docs', 'Profes Nomadas Presentation.pdf'),
+            os.path.join('docs', 'profes nomadas presentation.pdf'),
+            os.path.join('docs', 'profesnomadas_presentation.pdf'),
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            f"✅ Condado: Dublin - Distrito: {zone_mapping.get(zone, 'Desconocido')}\n\n"
-            "Por favor, selecciona el nivel educativo:",
-            reply_markup=reply_markup
-        )
+        for c in candidates:
+            if c and os.path.exists(c) and c.lower().endswith('.pdf'):
+                return c
+        # Búsqueda flexible en docs/ si no se encontró por rutas conocidas
+        try:
+            docs_dir = 'docs'
+            if os.path.isdir(docs_dir):
+                import unicodedata
+                def _norm(s: str) -> str:
+                    return ''.join(ch for ch in unicodedata.normalize('NFKD', s) if not unicodedata.combining(ch)).lower()
+                for name in os.listdir(docs_dir):
+                    full = os.path.join(docs_dir, name)
+                    if os.path.isfile(full) and name.lower().endswith('.pdf'):
+                        n = _norm(name)
+                        if 'profes' in n and 'nomadas' in n and 'present' in n:
+                            return full
+        except Exception:
+            pass
+        return None
+
+    async def run_presentation_process(self, user_id: int, context) -> None:
+        """Recoge emails de colegios y envía el PDF de presentación."""
+        if self.is_scraping:
+            await context.bot.send_message(chat_id=user_id, text="⚠️ Hay un proceso en curso. Intenta en unos minutos.")
+            return
+        self.is_scraping = True
+        try:
+            user = self.user_data[user_id]
+            pdf_path = user.presentation_pdf or self._discover_presentation_pdf()
+            if not pdf_path:
+                await context.bot.send_message(chat_id=user_id, text="❌ No se encontró el PDF de presentación. Configura PRESENTATION_PDF_PATH o súbelo a templates/ o docs/.")
+                return
+
+            county_map = {"cork": "4", "dublin": "27", "toda irlanda": "", "all": ""}
+            county_id = county_map.get(user.county_selection or 'all', '')
+            level_map = {"pre-school": "pre_school", "primary": "primary", "post-primary": "second_level"}
+            level = level_map.get(user.education_level or 'primary', 'primary')
+
+            await context.bot.send_message(chat_id=user_id, text="🔍 Buscando colegios y correos...")
+
+            offers: List[Dict] = []
+            if (user.county_selection == 'dublin') and user.dublin_zone and user.dublin_zone != 'all':
+                from src.scrapers.scraper_educationposts import DUBLIN_ZONES, DUBLIN_DISTRICTS
+                districts = DUBLIN_ZONES.get(user.dublin_zone, [])
+                for idx, district_id in enumerate(districts, 1):
+                    scraper = EducationPosts(level=level, county_id=county_id, district_id=district_id)
+                    district_offers = await scraper.fetch_all()
+                    for off in district_offers:
+                        off['district'] = DUBLIN_DISTRICTS.get(district_id, district_id)
+                    offers.extend(district_offers)
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"📍 {idx}/{len(districts)} {DUBLIN_DISTRICTS.get(district_id, district_id)}: {len(district_offers)} ofertas"
+                    )
+                    await asyncio.sleep(2)
+            else:
+                scraper = EducationPosts(level=level, county_id=county_id, district_id="")
+                offers = await scraper.fetch_all()
+
+            if not offers:
+                await context.bot.send_message(chat_id=user_id, text="ℹ️ No se encontraron ofertas/colegios.")
+                return
+
+            BAD_MAILS = ["noreply", "no-reply", "wordpress", "example.com", "educationposts.ie", "teachingcouncil.ie"]
+
+            def _school_identifier(offer: Dict) -> str:
+                roll_keys = ['roll_number', 'roll', 'rollno', 'roll_no', 'rollnumber', 'school_ref']
+                for key in roll_keys:
+                    val = offer.get(key)
+                    if val:
+                        return str(val).strip()
+                name = offer.get('school') or offer.get('school_name') or ''
+                return unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii').strip().lower()
+
+            emails_data: List[Dict[str, str]] = []
+            seen_emails: Set[str] = set()
+            seen_schools: Set[str] = set()
+
+            for off in offers:
+                mail = (off.get('email') or '').strip()
+                if not mail or any(b in mail.lower() for b in BAD_MAILS):
+                    continue
+                school_name = off.get('school') or off.get('school_name') or 'School'
+                school_id = _school_identifier(off)
+                if school_id and school_id in seen_schools:
+                    continue
+                mail_lower = mail.lower()
+                if mail_lower in seen_emails:
+                    continue
+                seen_emails.add(mail_lower)
+                if school_id:
+                    seen_schools.add(school_id)
+                emails_data.append({
+                    'email': mail,
+                    'school_name': school_name,
+                    'school_id': school_id,
+                })
+
+            if not emails_data:
+                await context.bot.send_message(chat_id=user_id, text="ℹ️ No hay emails válidos para enviar.")
+                return
+
+            test_mode = getattr(user, 'test_mode', False)
+            emails: List[Dict[str, str]] = emails_data
+            skipped_count = 0
+
+            if not test_mode:
+                try:
+                    already_sent = get_presentation_recipients(user.email)
+                except Exception as exc:
+                    already_sent = set()
+                    self.logger.warning(f"No se pudo consultar Firebase para presentaciones previas: {exc}")
+                if already_sent:
+                    filtered: List[Dict[str, str]] = []
+                    for item in emails:
+                        if item['email'].lower() in already_sent:
+                            skipped_count += 1
+                            continue
+                        filtered.append(item)
+                    emails = filtered
+                    if skipped_count:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=f"ℹ️ Se omiten {skipped_count} colegios porque ya recibieron la presentación anteriormente."
+                        )
+
+            if not emails:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="ℹ️ Todos los colegios encontrados ya habían recibido la presentación anteriormente."
+                )
+                return
+
+            total_to_send = len(emails)
+
+            if test_mode:
+                test_recipient = 'raulforteaibanez@gmail.com'
+                emails = emails[:10]
+                total_to_send = len(emails)
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🧪 Modo test: enviaré {total_to_send} correos al email de test: {test_recipient}"
+                )
+
+            await context.bot.send_message(chat_id=user_id, text=f"✉️ Enviando presentación a {total_to_send} colegios...")
+
+            sender = EmailSender()
+            # Cargar plantillas de asunto y cuerpo si existen
+            subject = self._read_file_safe(os.path.join('templates', 'presentation_subject.txt')) or "Presentation – Profes Nómadas"
+            body_tmpl = self._read_file_safe(os.path.join('templates', 'presentation_body.txt')) or (
+                "Dear {school_name} Team,\n\n"
+                "We are Profes Nómadas, a service that helps schools streamline teacher applications and communication.\n\n"
+                "Please find attached a short presentation with our details.\n\n"
+                "Kind regards,\nProfes Nómadas"
+            )
+            sent = 0
+            for idx, email_info in enumerate(emails, 1):
+                to_email = email_info['email']
+                school_name = email_info['school_name']
+                body = body_tmpl.format(school_name=school_name) if '{school_name}' in body_tmpl else body_tmpl
+                if test_mode:
+                    to_email = 'raulforteaibanez@gmail.com'
+                ok = await sender.send_presentation_email(
+                    from_email=user.email,
+                    from_password=user.email_password,
+                    to_email=to_email,
+                    presentation_pdf_path=pdf_path,
+                    subject=subject,
+                    body=body,
+                )
+                if ok:
+                    sent += 1
+                    if not test_mode:
+                        try:
+                            mark_presentation_sent(
+                                sender_email=user.email,
+                                recipient_email=email_info['email'].lower(),
+                                data={
+                                    'school': school_name,
+                                    'school_id': email_info['school_id'],
+                                }
+                            )
+                        except Exception as exc:
+                            self.logger.warning(f"No se pudo registrar en Firebase el envío de presentación a {email_info['email']}: {exc}")
+                status = "✅" if ok else "❌"
+                if idx % 5 == 0 or not ok:
+                    await context.bot.send_message(chat_id=user_id, text=f"{status} [{idx}/{total_to_send}] {to_email}")
+                await asyncio.sleep(1)
+
+            await context.bot.send_message(chat_id=user_id, text=f"🎉 Listo. Enviados {sent}/{total_to_send} correos.")
+        except Exception as e:
+            self.logger.error(f"Error en presentación: {e}")
+            await context.bot.send_message(chat_id=user_id, text="❌ Ocurrió un error durante el envío de la presentación.")
+        finally:
+            # Reset de modo presentación y estado de scraping
+            try:
+                self.user_data[user_id].presentation_mode = False
+            except Exception:
+                pass
+            self.is_scraping = False
+
+    def _read_file_safe(self, path: str) -> Optional[str]:
+        try:
+            if path and os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+        except Exception:
+            return None
+        return None
 
     async def prepare_documents_for_offer(self, offer: Dict) -> List[str]:
         """
