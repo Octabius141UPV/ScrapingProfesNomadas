@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import os
 from dotenv import load_dotenv
 import json
-from typing import Dict, Callable, List, Optional
+from typing import Dict, Callable, List, Optional, Set
 import aiofiles
 import sys
 import asyncio
@@ -1048,13 +1048,16 @@ class TelegramBot:
                 await context.bot.send_message(chat_id=user_id, text="ℹ️ No hay emails válidos para enviar.")
                 return
 
+            resend_api_key = os.getenv('RESEND_API_KEY')
+            resend_from_email = os.getenv('RESEND_FROM_EMAIL') or user.email
+
             test_mode = getattr(user, 'test_mode', False)
             emails: List[Dict[str, str]] = emails_data
             skipped_count = 0
 
             if not test_mode:
                 try:
-                    already_sent = get_presentation_recipients(user.email)
+                    already_sent = get_presentation_recipients(resend_from_email)
                 except Exception as exc:
                     already_sent = set()
                     self.logger.warning(f"No se pudo consultar Firebase para presentaciones previas: {exc}")
@@ -1090,6 +1093,19 @@ class TelegramBot:
                     text=f"🧪 Modo test: enviaré {total_to_send} correos al email de test: {test_recipient}"
                 )
 
+            if not resend_api_key:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ No se pudo enviar la presentación: falta configurar RESEND_API_KEY."
+                )
+                return
+            if not resend_from_email:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ No se pudo enviar la presentación: falta el remitente para Resend (RESEND_FROM_EMAIL)."
+                )
+                return
+
             await context.bot.send_message(chat_id=user_id, text=f"✉️ Enviando presentación a {total_to_send} colegios...")
 
             sender = EmailSender()
@@ -1109,19 +1125,21 @@ class TelegramBot:
                 if test_mode:
                     to_email = 'raulforteaibanez@gmail.com'
                 ok = await sender.send_presentation_email(
-                    from_email=user.email,
-                    from_password=user.email_password,
+                    from_email=resend_from_email,
+                    from_password=None,
                     to_email=to_email,
                     presentation_pdf_path=pdf_path,
                     subject=subject,
                     body=body,
+                    resend_api_key=resend_api_key,
+                    resend_from_email=resend_from_email,
                 )
                 if ok:
                     sent += 1
                     if not test_mode:
                         try:
                             mark_presentation_sent(
-                                sender_email=user.email,
+                                sender_email=resend_from_email,
                                 recipient_email=email_info['email'].lower(),
                                 data={
                                     'school': school_name,

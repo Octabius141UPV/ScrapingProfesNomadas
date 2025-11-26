@@ -7,6 +7,7 @@ from email import encoders
 import mimetypes
 import html
 import os
+import base64
 from typing import Dict, List, Optional, Any
 import asyncio
 import re
@@ -351,59 +352,107 @@ ScrapingProfesNomadas Bot"""
             logger.error(f"Error en email de prueba: {str(e)}")
             return False
 
-    async def send_presentation_email(self, from_email: str, from_password: str, to_email: str, presentation_pdf_path: str, subject: Optional[str] = None, body: Optional[str] = None) -> bool:
-        """
-        Envía un email sencillo con un PDF de presentación adjunto.
+    async def send_presentation_email(
+        self,
+        from_email: Optional[str],
+        from_password: Optional[str],
+        to_email: str,
+        presentation_pdf_path: str,
+        subject: Optional[str] = None,
+        body: Optional[str] = None,
+        *,
+        resend_api_key: Optional[str] = None,
+        resend_from_email: Optional[str] = None,
+    ) -> bool:
+        """Envía la presentación usando Resend en lugar de SMTP clásico.
 
         Args:
-            from_email: Dirección del remitente (Gmail recomendado con contraseña de app)
-            from_password: Contraseña de aplicación del remitente
+            from_email: Dirección visible del remitente (se usa como fallback si no se especifica ``resend_from_email``)
+            from_password: Ya no se utiliza; se mantiene por compatibilidad
             to_email: Destinatario
             presentation_pdf_path: Ruta al PDF a adjuntar
             subject: Asunto opcional
             body: Cuerpo opcional (texto plano UTF-8)
+            resend_api_key: API Key de Resend (opcional, por defecto se lee de ``RESEND_API_KEY``)
+            resend_from_email: Remitente verificado en Resend (opcional, fallback a ``from_email`` o ``RESEND_FROM_EMAIL``)
         """
         try:
             if not os.path.exists(presentation_pdf_path):
                 logger.error(f"PDF de presentación no encontrado: {presentation_pdf_path}")
                 return False
-            self.email_address = from_email
-            self.email_password = from_password
-            if not self.email_address or not self.email_password:
-                logger.error("Faltan credenciales para envío de presentación")
+
+            api_key = resend_api_key or os.getenv("RESEND_API_KEY")
+            if not api_key:
+                logger.error("Resend no está configurado. Define RESEND_API_KEY o pasa 'resend_api_key'.")
                 return False
-            # Contenedor mixto para adjuntos
-            msg = MIMEMultipart()
-            msg['From'] = self.email_address
-            msg['To'] = to_email
-            msg['Subject'] = subject or "Presentation – Profes Nómadas"
+
+            sender_address = resend_from_email or from_email or os.getenv("RESEND_FROM_EMAIL")
+            if not sender_address:
+                logger.error("Falta la dirección remitente para Resend. Configura RESEND_FROM_EMAIL o pásala como argumento.")
+                return False
+
             default_body = (
                 "Dear School Team,\n\n"
                 "I hope you are well. We are Profes Nómadas, a service that helps schools streamline teacher applications and communication. "
                 "Please find attached a short presentation with our details.\n\n"
                 "Kind regards,\nProfes Nómadas"
             )
-            # Parte alternativa: texto plano + HTML para mejor render en Gmail
-            alternative = MIMEMultipart('alternative')
             plain_text = body or default_body
-            alternative.attach(MIMEText(plain_text, 'plain', 'utf-8'))
-            # HTML simple, sin estilos agresivos; pre-wrap para saltos de línea
             html_text = html.escape(plain_text).replace('\n', '<br>')
-            html_body = f"<div style=\"font-family:Arial,Helvetica,sans-serif; white-space:pre-wrap;\">{html_text}</div>"
-            alternative.attach(MIMEText(html_body, 'html', 'utf-8'))
-            msg.attach(alternative)
-            # Asegurar nombre con extensión .pdf para evitar "noname"
-            _base = os.path.basename(presentation_pdf_path) or 'ProfesNomadas_Presentation'
-            if not _base.lower().endswith('.pdf'):
-                _base += '.pdf'
-            attach_info = {
-                'path': presentation_pdf_path,
-                'filename': _base
+            html_body = (
+                "<div style=\"font-family:Arial,Helvetica,sans-serif; white-space:pre-wrap;\">"
+                f"{html_text}"
+                "</div>"
+            )
+
+            attachment_name = os.path.basename(presentation_pdf_path) or 'ProfesNomadas_Presentation.pdf'
+            if not attachment_name.lower().endswith('.pdf'):
+                attachment_name += '.pdf'
+
+            with open(presentation_pdf_path, "rb") as pdf_file:
+                encoded_pdf = base64.b64encode(pdf_file.read()).decode("ascii")
+
+            payload: Dict[str, Any] = {
+                "from": sender_address,
+                "to": [to_email],
+                "subject": subject or "Presentation – Profes Nómadas",
+                "html": html_body,
+                "text": plain_text,
+                "attachments": [
+                    {
+                        "filename": attachment_name,
+                        "content": encoded_pdf,
+                        "mime_type": "application/pdf",
+                    }
+                ],
             }
-            self._attach_document(msg, attach_info)
-            return await self._send_email(msg, to_email)
+
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._send_presentation_via_resend, payload, api_key)
         except Exception as e:
             logger.error(f"Error enviando presentación: {str(e)}")
+            return False
+
+    def _send_presentation_via_resend(self, payload: Dict[str, Any], api_key: str) -> bool:
+        """Ejecuta el envío a través de Resend en un hilo separado."""
+        try:
+            import resend  # type: ignore[import]
+        except ImportError:
+            logger.error("La librería 'resend' no está instalada. Añádela a los requisitos o ejecuta 'pip install resend'.")
+            return False
+
+        try:
+            resend.api_key = api_key
+            response = resend.Emails.send(payload)
+            resend_id = None
+            try:
+                resend_id = response.get('id') if isinstance(response, dict) else getattr(response, 'id', None)
+            except Exception:
+                resend_id = getattr(response, 'id', None)
+            logger.info("Presentación enviada con Resend", extra={"resend_id": resend_id})
+            return True
+        except Exception as exc:
+            logger.error(f"Error enviando email con Resend: {exc}")
             return False
     
     def _extract_tc_number_from_pdf(self, pdf_path: str) -> Optional[str]:

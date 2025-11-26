@@ -16,3 +16,4 @@ python-docx>=1.0.0
 reportlab>=4.0.0
 firebase-admin>=6.3.0
 fpdf==1.7.2
+resend>=0.7.0

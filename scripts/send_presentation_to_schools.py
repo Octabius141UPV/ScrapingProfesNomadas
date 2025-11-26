@@ -91,15 +91,21 @@ async def send_presentation_to_schools(user_data: Dict) -> Dict:
     """
     Envía la presentación a los emails de colegios en la región seleccionada.
 
-    user_data requiere: 'email', 'email_password', 'county_selection'
-    opcionales: 'dublin_zone', 'subject', 'body'
+    user_data requiere: 'county_selection'
+    opcionales: 'email'/'resend_from_email', 'resend_api_key', 'dublin_zone', 'subject', 'body'
     """
     try:
         sender = EmailSender()
-        from_email = user_data.get('email')
-        from_password = user_data.get('email_password')
-        if not from_email or not from_password:
-            return {"success": False, "message": "Credenciales de email faltantes"}
+        resend_api_key = user_data.get('resend_api_key') or os.getenv('RESEND_API_KEY')
+        resend_from_email = (
+            user_data.get('resend_from_email')
+            or user_data.get('email')
+            or os.getenv('RESEND_FROM_EMAIL')
+        )
+        if not resend_api_key:
+            return {"success": False, "message": "Resend no está configurado. Define RESEND_API_KEY o pásalo en user_data."}
+        if not resend_from_email:
+            return {"success": False, "message": "Falta el remitente. Configura RESEND_FROM_EMAIL o proporciona 'email'/'resend_from_email'."}
 
         pdf_path = user_data.get('presentation_pdf') or discover_presentation_pdf()
         if not pdf_path:
@@ -174,7 +180,7 @@ async def send_presentation_to_schools(user_data: Dict) -> Dict:
         # Excluir emails ya contactados
         already_sent: Set[str] = set()
         try:
-            already_sent = get_presentation_recipients(from_email)
+            already_sent = get_presentation_recipients(resend_from_email)
         except Exception as exc:
             logger.warning(f"No se pudo consultar Firebase para presentaciones previas: {exc}")
 
@@ -207,19 +213,21 @@ async def send_presentation_to_schools(user_data: Dict) -> Dict:
         for idx, item in enumerate(emails, 1):
             body = body_tmpl.format(school_name=item['school_name']) if '{school_name}' in body_tmpl else body_tmpl
             ok = await sender.send_presentation_email(
-                from_email=from_email,
-                from_password=from_password,
+                from_email=resend_from_email,
+                from_password=None,
                 to_email=item['email'],
                 presentation_pdf_path=pdf_path,
                 subject=subject,
                 body=body,
+                resend_api_key=resend_api_key,
+                resend_from_email=resend_from_email,
             )
             if ok:
                 sent += 1
                 logger.info(f"[{idx}/{total}] ✅ Enviado a {item['email']}")
                 try:
                     mark_presentation_sent(
-                        sender_email=from_email,
+                        sender_email=resend_from_email,
                         recipient_email=item['email'].lower(),
                         data={
                             'school': item['school_name'],
@@ -251,10 +259,11 @@ async def _main_cli():
     """Modo CLI simple para pruebas manuales."""
     user_data = {
         'email': os.getenv('EMAIL_ADDRESS'),
-        'email_password': os.getenv('EMAIL_PASSWORD'),
+        'resend_api_key': os.getenv('RESEND_API_KEY'),
         'county_selection': os.getenv('PRESENTATION_COUNTY', 'all'),
         'dublin_zone': os.getenv('PRESENTATION_DUBLIN_ZONE'),
-        'presentation_pdf': os.getenv('PRESENTATION_PDF_PATH')
+        'presentation_pdf': os.getenv('PRESENTATION_PDF_PATH'),
+        'resend_from_email': os.getenv('RESEND_FROM_EMAIL'),
     }
     res = await send_presentation_to_schools(user_data)
     print(res)
