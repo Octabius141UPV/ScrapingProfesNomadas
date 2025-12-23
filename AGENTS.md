@@ -4,12 +4,13 @@
 - `src/`: Main package code
   - `scrapers/`: EducationPosts scraper(s)
   - `bots/`: Telegram bot and state handling
-  - `utils/`: PDF, logging, Firebase, doc helpers
+  - `utils/`: PDF, logging, Firebase, doc helpers, Notion CRM manager
   - `generators/`: Email generation and sending
-- `scripts/`: Orchestration scripts (e.g., `scrape_all_safe.py`)
+- `scripts/`: Orchestration scripts (e.g., `scrape_all_safe.py`, `setup_notion_crm.py`, `manage_notion_crm.py`)
 - `tests/`: Pytest tests (e.g., `test_pdf_generation.py`)
 - `templates/`: Email templates; `temp/`: working files (PDFs)
 - `data/`, `logs/`: Outputs and logs
+- `docs/`: Documentation including Notion CRM guides
 - Entry points: `run.py` (bot), `scripts/scrape_all_safe.py` (scraper)
 
 ## Build, Test, and Development Commands
@@ -41,6 +42,8 @@
   - `TELEGRAM_BOT_TOKEN`, `AUTHORIZED_USER_IDS`
   - `EDUCATIONPOSTS_USERNAME`, `EDUCATIONPOSTS_PASSWORD`
   - `GOOGLE_APPLICATION_CREDENTIALS` (service account JSON), `FIREBASE_STORAGE_BUCKET`
+  - `NOTION_API_KEY`, `NOTION_DATABASE_ID` (for CRM integration)
   - Optional test email: `EMAIL_ADDRESS`
 - Create `.env` from `.env.example`; configure before running. Keep credentials out of code and commits.
+- Notion CRM is optional; system works without it (graceful fallback)
 

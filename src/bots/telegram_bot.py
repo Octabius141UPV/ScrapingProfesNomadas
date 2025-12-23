@@ -41,6 +41,11 @@ from src.utils.firebase_manager import (
     mark_presentation_sent,
 )
 from src.generators.email_sender import EmailSender
+try:
+    from src.utils.notion_crm_manager import NotionCRMManager
+    _NOTION_CRM_AVAILABLE = True
+except Exception:
+    _NOTION_CRM_AVAILABLE = False
 
 # Configurar logging
 logging.basicConfig(
@@ -1109,6 +1114,15 @@ class TelegramBot:
             await context.bot.send_message(chat_id=user_id, text=f"✉️ Enviando presentación a {total_to_send} colegios...")
 
             sender = EmailSender()
+
+            # Inicializar Notion CRM (opcional)
+            notion_crm = None
+            if _NOTION_CRM_AVAILABLE:
+                try:
+                    notion_crm = NotionCRMManager()
+                    self.logger.info("✅ Notion CRM listo para registrar contactos")
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Notion CRM no disponible: {e}")
             # Cargar plantillas de asunto y cuerpo si existen
             subject = self._read_file_safe(os.path.join('templates', 'presentation_subject.txt')) or "Presentation – Profes Nómadas"
             body_tmpl = self._read_file_safe(os.path.join('templates', 'presentation_body.txt')) or (
@@ -1148,6 +1162,56 @@ class TelegramBot:
                             )
                         except Exception as exc:
                             self.logger.warning(f"No se pudo registrar en Firebase el envío de presentación a {email_info['email']}: {exc}")
+
+                        # Registrar en Notion CRM
+                        if notion_crm:
+                            try:
+                                # Mapear nivel educativo del scraper a las opciones de Notion
+                                # level se calcula más arriba (primary / second_level / pre_school)
+                                notion_level_map = {
+                                    'primary': 'Primary',
+                                    'second_level': 'Secondary',
+                                    'pre_school': 'Pre-school',
+                                }
+                                # county_selection puede ser 'cork', 'dublin', 'toda irlanda'
+                                county_value = (self.user_data[user_id].county_selection or '').strip().lower()
+                                county_label = county_value.title() if county_value and county_value not in {'all', 'toda irlanda'} else ''
+
+                                # dublin_zone almacenado como '1','2','6w','all', etc.
+                                dz_raw = (self.user_data[user_id].dublin_zone or '').strip().lower()
+                                dublin_zone_label = ''
+                                if county_value == 'dublin':
+                                    if dz_raw in {'all', '23'}:
+                                        dublin_zone_label = 'All Dublin'
+                                    elif dz_raw:
+                                        if dz_raw == '6w':
+                                            dublin_zone_label = 'Dublin 6W'
+                                        else:
+                                            dublin_zone_label = f"Dublin {dz_raw.upper()}"
+
+                                # Nivel para Notion
+                                # Reutilizamos el 'level' calculado unas líneas arriba para el scraper
+                                # Si por estructura no está en alcance, derivamos de user.education_level
+                                try:
+                                    level_for_scraper = level
+                                except NameError:
+                                    ul = (self.user_data[user_id].education_level or 'primary').strip().lower()
+                                    level_for_scraper = {'pre-school':'pre_school', 'post-primary':'second_level'}.get(ul, 'primary')
+                                notion_level = notion_level_map.get(level_for_scraper, 'Primary')
+
+                                notion_crm.add_school_contact(
+                                    school_name=school_name,
+                                    email=email_info['email'],
+                                    school_id=email_info['school_id'],
+                                    county=county_label,
+                                    dublin_zone=dublin_zone_label,
+                                    education_level=notion_level,
+                                    sender_email=resend_from_email,
+                                    notes='Presentación enviada automáticamente desde el bot',
+                                    status='Contacted'
+                                )
+                            except Exception as exc:
+                                self.logger.warning(f"No se pudo registrar en Notion CRM el envío a {email_info['email']}: {exc}")
                 status = "✅" if ok else "❌"
                 if idx % 5 == 0 or not ok:
                     await context.bot.send_message(chat_id=user_id, text=f"{status} [{idx}/{total_to_send}] {to_email}")

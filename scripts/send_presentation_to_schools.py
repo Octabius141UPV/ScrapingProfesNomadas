@@ -19,6 +19,11 @@ from src.scrapers.scraper_educationposts import EducationPosts, DUBLIN_ZONES, DU
 from src.generators.email_sender import EmailSender
 from src.utils.firebase_manager import get_presentation_recipients, mark_presentation_sent
 
+try:
+    from src.utils.notion_crm_manager import NotionCRMManager
+    NOTION_CRM_AVAILABLE = True
+except ImportError:
+    NOTION_CRM_AVAILABLE = False
 
 logger = logging.getLogger("presentation_sender")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s: %(message)s")
@@ -96,6 +101,16 @@ async def send_presentation_to_schools(user_data: Dict) -> Dict:
     """
     try:
         sender = EmailSender()
+        
+        # Inicializar Notion CRM si está disponible y configurado
+        notion_crm = None
+        if NOTION_CRM_AVAILABLE:
+            try:
+                notion_crm = NotionCRMManager()
+                logger.info("✅ Notion CRM inicializado y listo para registrar contactos")
+            except (ValueError, ImportError) as e:
+                logger.warning(f"⚠️  Notion CRM no disponible: {e}")
+        
         resend_api_key = user_data.get('resend_api_key') or os.getenv('RESEND_API_KEY')
         resend_from_email = (
             user_data.get('resend_from_email')
@@ -225,6 +240,8 @@ async def send_presentation_to_schools(user_data: Dict) -> Dict:
             if ok:
                 sent += 1
                 logger.info(f"[{idx}/{total}] ✅ Enviado a {item['email']}")
+                
+                # Registrar en Firebase
                 try:
                     mark_presentation_sent(
                         sender_email=resend_from_email,
@@ -236,6 +253,24 @@ async def send_presentation_to_schools(user_data: Dict) -> Dict:
                     )
                 except Exception as exc:
                     logger.warning(f"No se pudo registrar en Firebase el envío a {item['email']}: {exc}")
+                
+                # Registrar en Notion CRM
+                if notion_crm:
+                    try:
+                        notion_crm.add_school_contact(
+                            school_name=item['school_name'],
+                            email=item['email'],
+                            school_id=item['school_id'],
+                            county=county_selection.title() if county_selection != 'all' else '',
+                            dublin_zone=dublin_zone or '',
+                            education_level=level,
+                            sender_email=resend_from_email,
+                            notes=f"Presentación enviada automáticamente",
+                            status="contacted"
+                        )
+                        logger.info(f"📝 Registrado en Notion CRM: {item['school_name']}")
+                    except Exception as exc:
+                        logger.warning(f"No se pudo registrar en Notion CRM el envío a {item['email']}: {exc}")
             else:
                 err = f"[{idx}/{total}] ❌ Falló {item['email']}"
                 logger.error(err)

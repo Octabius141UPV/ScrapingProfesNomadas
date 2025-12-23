@@ -17,6 +17,7 @@ Automated job application system for nomadic teachers seeking positions in Irela
 - 🔐 **Secure Authentication** - User authorization system for bot access
 - 📁 **Document Management** - Handles CVs, certificates, and other attachments
 - 🌐 **Resend Integration** - Professional email delivery with Resend API
+- 📋 **Notion CRM Integration** - Automatic tracking of contacted schools in Notion database
 
 ## 🏗️ Project Structure
 
@@ -94,9 +95,15 @@ ScrapingProfesNomadas/
    GOOGLE_APPLICATION_CREDENTIALS=path/to/service-account.json
    FIREBASE_STORAGE_BUCKET=your-bucket.appspot.com
    
+   # Notion CRM (Optional - for school contact tracking)
+   NOTION_API_KEY=secret_your_notion_integration_token
+   NOTION_DATABASE_ID=your_notion_database_id
+   
    # Testing
    EMAIL_ADDRESS=test@example.com  # For test emails
    ```
+
+   **📋 For Notion CRM setup**, see detailed instructions in [`docs/NOTION_CRM.md`](docs/NOTION_CRM.md)
 
 5. **Run the setup script**
    ```bash
@@ -159,6 +166,41 @@ graph TD
 - **Both** - Combined Cork + Dublin search
 - **All Ireland** - Nationwide search
 
+### Notion CRM (Optional)
+
+The system can automatically track all schools contacted in a Notion database for CRM purposes.
+
+**Quick Setup:**
+```bash
+# 1. Install Notion client
+pip install notion-client
+
+# 2. Run setup wizard
+python scripts/setup_notion_crm.py
+
+# 3. Follow the instructions to configure Notion
+```
+
+**Using the CRM:**
+```bash
+# List all contacts
+python scripts/manage_notion_crm.py list
+
+# Filter by status
+python scripts/manage_notion_crm.py list --status interested
+
+# Add a contact manually
+python scripts/manage_notion_crm.py add --school "School Name" --email "school@example.ie"
+
+# Update contact status
+python scripts/manage_notion_crm.py update --email "school@example.ie" --status followed_up
+
+# View statistics
+python scripts/manage_notion_crm.py stats
+```
+
+Once configured, schools will be automatically added to Notion when sending presentations. For complete documentation, see [`docs/NOTION_CRM.md`](docs/NOTION_CRM.md).
+
 ## 🛠️ Development
 
 ### Running Tests
@@ -196,10 +238,13 @@ The project follows:
 
 - [`run.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/run.py) - Main entry point
 - [`scripts/scrape_all_safe.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/scripts/scrape_all_safe.py) - Core scraping logic
+- [`scripts/send_presentation_to_schools.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/scripts/send_presentation_to_schools.py) - School presentation mailer
+- [`scripts/setup_notion_crm.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/scripts/setup_notion_crm.py) - Notion CRM setup and verification
 - [`src/scrapers/scraper_educationposts.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/src/scrapers/) - EducationPosts scraper
 - [`src/bots/telegram_bot.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/src/bots/) - Telegram bot implementation
 - [`src/generators/email_sender.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/src/generators/) - Email delivery system
 - [`src/generators/ai_email_generator_v2.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/src/generators/) - AI email generation
+- [`src/utils/notion_crm_manager.py`](file:///Users/raulfortea/Projects/ScrapingProfesNomadas/src/utils/) - Notion CRM integration
 
 ## 🔐 Security
 
