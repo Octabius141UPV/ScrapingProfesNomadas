@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
-"""Script de prueba para verificar conexión a Notion usando NotionCRMManager."""
+"""Script de prueba para verificar conexión a Notion usando NotionCRMManager.
+
+Este script añade automáticamente el directorio raíz del proyecto a `sys.path`
+para que la importación `from src.utils...` funcione cuando se ejecuta
+directamente desde la carpeta `scripts/`.
+"""
 import os
+import sys
 from datetime import datetime
+
+# Asegurar que el directorio raíz del repositorio esté en sys.path
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 from src.utils.notion_crm_manager import NotionCRMManager
 
