@@ -101,39 +101,36 @@ class NotionCRMManager:
                     status=status
                 )
             
-            # Crear propiedades de la página
-            properties = {
-                "School Name": {
-                    "title": [{"text": {"content": school_name}}]
-                },
-                "Email": {
-                    "email": email
-                },
-                "Status": {
-                    "select": {"name": status}
-                },
-                "Contact Date": {
-                    "date": {"start": datetime.now().isoformat()}
-                }
-            }
+            # Crear propiedades de la página pero sólo incluir las que existen
+            db_props = self._get_database_properties()
+
+            properties = {}
+            if "School Name" in db_props:
+                properties["School Name"] = {"title": [{"text": {"content": school_name}}]}
+            if "Email" in db_props:
+                properties["Email"] = {"email": email}
+            if "Status" in db_props:
+                properties["Status"] = {"select": {"name": status}}
+            if "Contact Date" in db_props:
+                properties["Contact Date"] = {"date": {"start": datetime.now().isoformat()}}
             
             # Añadir campos opcionales solo si tienen valor
-            if school_id:
+            if school_id and "School ID" in db_props:
                 properties["School ID"] = {"rich_text": [{"text": {"content": school_id}}]}
             
-            if county:
+            if county and "County" in db_props:
                 properties["County"] = {"select": {"name": county.title()}}
             
-            if dublin_zone:
+            if dublin_zone and "City Zone" in db_props:
                 properties["City Zone"] = {"select": {"name": dublin_zone}}
             
-            if education_level:
+            if education_level and "Education Level" in db_props:
                 properties["Education Level"] = {"select": {"name": education_level}}
             
-            if sender_email:
+            if sender_email and "Sender Email" in db_props:
                 properties["Sender Email"] = {"email": sender_email}
             
-            if notes:
+            if notes and "Notes" in db_props:
                 properties["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
             
             # Crear página en Notion
@@ -170,15 +167,17 @@ class NotionCRMManager:
             ID de la página actualizada o None si falla
         """
         try:
+            # Actualizar sólo propiedades existentes en la DB
+            db_props = self._get_database_properties()
             properties = {}
-            
-            if status:
+
+            if status and "Status" in db_props:
                 properties["Status"] = {"select": {"name": status}}
-            
-            if contact_date:
+
+            if contact_date and "Contact Date" in db_props:
                 properties["Contact Date"] = {"date": {"start": contact_date}}
             
-            if notes:
+            if notes and "Notes" in db_props:
                 # Obtener notas existentes y concatenar
                 existing_page = self.client.pages.retrieve(page_id=page_id)
                 existing_notes = ""
@@ -230,6 +229,19 @@ class NotionCRMManager:
         except Exception as e:
             logger.error(f"❌ Error buscando colegio por email en Notion: {e}")
             return None
+
+    def _get_database_properties(self) -> Dict:
+        """Recupera las propiedades actuales de la base de datos en Notion.
+
+        Devuelve un diccionario con las propiedades (las claves son los nombres de las columnas).
+        """
+        try:
+            resp = self.client.databases.retrieve(database_id=self.database_id)
+            props = resp.get('properties', {}) or {}
+            return props
+        except Exception as e:
+            logger.error(f"❌ Error obteniendo esquema de la DB de Notion: {e}")
+            return {}
     
     def get_all_contacts(self, status_filter: Optional[str] = None) -> List[Dict]:
         """
