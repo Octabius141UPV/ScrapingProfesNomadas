@@ -16,7 +16,6 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.colors import black
 import io
-from pdf2image import convert_from_path
 from PIL import Image, ImageDraw, ImageFont
 import fitz  # PyMuPDF
 from datetime import datetime

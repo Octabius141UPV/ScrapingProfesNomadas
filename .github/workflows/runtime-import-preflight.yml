@@ -1,0 +1,26 @@
+name: Runtime import preflight
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  runtime-import-preflight:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Validate release runtime imports in a fresh virtual environment
+        run: |
+          VENV="$RUNNER_TEMP/runtime-import-preflight-${{ matrix.python-version }}"
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --upgrade pip
+          "$VENV/bin/python" -m pip install -r requirements.txt
+          "$VENV/bin/python" scripts/runtime_import_preflight.py
