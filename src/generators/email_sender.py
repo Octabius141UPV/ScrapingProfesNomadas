@@ -10,8 +10,11 @@ import os
 import base64
 from typing import Dict, List, Optional, Any
 import asyncio
+import uuid
 import re
 from PyPDF2 import PdfReader
+
+from src.utils.application_send_policy import ApplicationSendPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +22,21 @@ class EmailSender:
     def __init__(self):
         self.smtp_server = "smtp.gmail.com"
         self.smtp_port = 587
-        
+
         # Las credenciales se proporcionarán por usuario
         self.email_address = None
         self.email_password = None
-            
-    async def send_application_email(self, user_data: Dict, offer: Dict, excel_path: str = None, application_form_pdf: str = None, body: str = None, subject: str = None) -> bool:
+        self.send_policy = ApplicationSendPolicy()
+        self._batch_id = uuid.uuid4().hex
+        self._batch_attempt_count = 0
+        self._last_smtp_error_category = None
+        self._last_smtp_failure_is_definite = False
+        self._last_application_send_reason = None
+
+    async def send_application_email(self, user_data: Dict, offer: Dict, excel_path: str = None, application_form_pdf: str = None, body: str = None, subject: str = None, run_id: str = None, queue_managed: bool = False) -> bool:
         """
         Envía un email de solicitud personalizado para una oferta específica
-        
+
         Args:
             user_data: Datos del usuario
             offer: Datos de la oferta
@@ -36,41 +45,72 @@ class EmailSender:
             body: Cuerpo personalizado del email (opcional)
         """
         try:
+            self._last_application_send_reason = None
             # Configurar credenciales del usuario
             self.email_address = user_data.get('email')
             self.email_password = user_data.get('email_password')
-            
+
             if not self.email_address or not self.email_password:
-                logger.error("Credenciales de email no proporcionadas por el usuario")
+                logger.error("Email credentials are missing.")
+                self._last_application_send_reason = "credentials_missing"
                 return False
-            
+
+            test_mode = bool(user_data.get('test_mode', False))
+            run_id = run_id or self._batch_id
+            if not queue_managed and self._batch_attempt_count >= self.send_policy.batch_limit:
+                await self.send_policy.record_batch_skip_async(
+                    account_email=self.email_address,
+                    recipient_email=offer.get('email', ''),
+                    offer=offer,
+                    run_id=run_id,
+                )
+                logger.warning("Application email skipped by batch safety limit.")
+                self._last_application_send_reason = "batch_limit_reached"
+                return False
+            if not queue_managed:
+                self._batch_attempt_count += 1
+
+            decision = await self.send_policy.reserve_async(
+                account_email=self.email_address,
+                recipient_email=offer.get('email', ''),
+                offer=offer,
+                run_id=run_id,
+                test_mode=test_mode,
+            )
+            if not decision.allowed:
+                logger.warning("Application email skipped by send policy: %s", decision.reason)
+                self._last_application_send_reason = decision.reason
+                return False
+            if decision.delay_seconds:
+                await asyncio.sleep(decision.delay_seconds)
+
             # Ya no usamos perfil de usuario basado en AI
-            
+
             # Generar contenido del email
             subject = subject or self._generate_subject(user_data, offer)
-            
+
             # Usar el body proporcionado si existe, si no, generar como antes
             if body is not None:
                 email_body = body
             else:
                 email_body = self._generate_email_body_static(user_data, offer)
             logger.info("Email generado con template estático" if body is None else "Email generado con body personalizado")
-            
+
             # Crear mensaje
             msg = MIMEMultipart()
             msg['From'] = self.email_address
             msg['To'] = offer['email']
             msg['Subject'] = subject
-            
+
             # Adjuntar cuerpo del mensaje
             msg.attach(MIMEText(email_body, 'plain', 'utf-8'))
-            
+
             # Adjuntar documentos si existen
             if user_data.get('documents'):
                 for doc in user_data['documents']:
                     if os.path.exists(doc['path']):
                         self._attach_document(msg, doc)
-            
+
             # Adjuntar PDF del application form personalizado si se proporciona
             if application_form_pdf and os.path.exists(application_form_pdf):
                 pdf_doc = {
@@ -78,31 +118,51 @@ class EmailSender:
                     'filename': f"Application_Form_{offer.get('school_name', 'School').replace(' ', '_')}.pdf"
                 }
                 self._attach_document(msg, pdf_doc)
-                logger.info(f"Application form PDF personalizado adjuntado: {pdf_doc['filename']}")
-            
+                logger.info("Customized application form attached.")
+
             # Enviar email
             success = await self._send_email(msg, offer['email'])
-            
+            error_category = self._last_smtp_error_category
+            await self.send_policy.record_smtp_result_async(
+                decision,
+                run_id,
+                success=success,
+                error_category=error_category,
+            )
             if success:
-                logger.info(f"Email enviado exitosamente a {offer['school_name']} ({offer['email']})")
+                await self.send_policy.mark_sent_async(decision, run_id)
+                logger.info("Application email accepted by SMTP.")
+                self._last_application_send_reason = "sent"
+            elif self._last_smtp_failure_is_definite:
+                await self.send_policy.release_after_definite_failure_async(
+                    decision, run_id, error_category or "smtp_definite_failure"
+                )
+                logger.warning("Application email was definitively rejected.")
+                self._last_application_send_reason = error_category or "smtp_definite_failure"
             else:
-                logger.error(f"Error enviando email a {offer['school_name']}")
-                
+                logger.warning("Application SMTP outcome is indeterminate; reservation remains locked for review.")
+                self._last_application_send_reason = error_category or "smtp_delivery_indeterminate"
             return success
-            
-        except Exception as e:
-            logger.error(f"Error generando email para {offer.get('school_name', 'Unknown')}: {str(e)}")
+
+        except Exception as exc:
+            if 'decision' in locals():
+                await self.send_policy.release_after_definite_failure_async(
+                    decision, run_id, "preflight_unexpected_error"
+                )
+            logger.error("Application email could not be prepared (%s).", type(exc).__name__)
+            self._last_application_send_reason = "preflight_unexpected_error"
             return False
-            
+
     def _generate_subject(self, user_data: Dict, offer: Dict) -> str:
         """Genera el asunto del email"""
         return f"Application – {user_data['name']}"
-        
+
     def _generate_email_body_static(self, user_data: Dict, offer: Dict) -> str:
         """
         Genera el cuerpo del email usando el template estático (fallback)
         """
         try:
+            self._last_application_send_reason = None
             # Cargar template
             template_path = "templates/email_template.txt"
             if os.path.exists(template_path):
@@ -111,10 +171,10 @@ class EmailSender:
             else:
                 # Template por defecto si no existe el archivo
                 template = self._get_default_template()
-            
+
             # Inicializar variables para el TC
             tc_info_text = ""
-            
+
             # Verificar si hay documentos de TC
             tc_document_path = None
             if user_data.get('documents') and isinstance(user_data['documents'], dict):
@@ -164,7 +224,7 @@ class EmailSender:
 
             # Reemplazar [nombre] donde sea que aparezca en el texto
             formatted_template = formatted_template.replace("[nombre]", user_data.get('name', '[nombre]'))
-            
+
             body = formatted_template.format(
                 school_name=offer.get('school_name', 'Your Institution'),
                 user_name=user_data['name'],
@@ -174,13 +234,13 @@ class EmailSender:
                 county=offer.get('county', 'Ireland'),
                 description=offer.get('description', '')[:200] + "..." if offer.get('description', '') else ''
             )
-            
+
             return body
-            
+
         except Exception as e:
             logger.error(f"Error generando cuerpo del email: {str(e)}")
             return self._get_fallback_email_body(user_data, offer)
-            
+
     def _get_default_template(self) -> str:
         """Template por defecto para emails"""
         return """Dear Hiring Manager at {school_name},
@@ -191,7 +251,7 @@ I am a qualified educator with a passion for teaching and a commitment to provid
 
 Key highlights of my profile:
 • Qualified teaching professional
-• Strong commitment to educational excellence  
+• Strong commitment to educational excellence
 • Excellent communication and interpersonal skills
 • Adaptable and enthusiastic approach to learning
 • Experience working in multicultural environments
@@ -253,15 +313,15 @@ Best regards,
             part.add_header('Content-Disposition', 'attachment', filename=filename)
 
             msg.attach(part)
-            logger.info(f"Documento adjuntado: {filename}")
-            
+            logger.info("Document attachment added.")
+
         except Exception as e:
             try:
                 fn = document.get('filename', 'attachment')
             except Exception:
                 fn = 'attachment'
-            logger.error(f"Error adjuntando documento {fn}: {str(e)}")
-            
+            logger.error("Document attachment could not be added (%s).", type(e).__name__)
+
     async def _send_email(self, msg: MIMEMultipart, recipient: str) -> bool:
         """
         Envía el email usando SMTP
@@ -270,86 +330,142 @@ Best regards,
             # Ejecutar en un thread separado para no bloquear
             loop = asyncio.get_event_loop()
             success = await loop.run_in_executor(
-                None, 
-                self._smtp_send, 
-                msg, 
+                None,
+                self._smtp_send,
+                msg,
                 recipient
             )
             return success
-            
+
         except Exception as e:
-            logger.error(f"Error en envío asíncrono: {str(e)}")
+            logger.error("Asynchronous SMTP send failed (%s).", type(e).__name__)
             return False
-            
+
     def _smtp_send(self, msg: MIMEMultipart, recipient: str) -> bool:
         """
         Función síncrona para envío SMTP
         """
+        self._last_smtp_error_category = None
+        self._last_smtp_failure_is_definite = False
         try:
             # Crear conexión SMTP
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
             server.starttls()  # Habilitar encriptación
             server.login(self.email_address, self.email_password)
-            
+
             # Enviar email
             text = msg.as_string()
             server.sendmail(self.email_address, recipient, text)
             server.quit()
-            
+
             return True
-            
+
         except smtplib.SMTPAuthenticationError:
-            logger.error("Error de autenticación SMTP. Verifica EMAIL_ADDRESS y EMAIL_PASSWORD")
+            self._last_smtp_error_category = "smtp_authentication_failed"
+            self._last_smtp_failure_is_definite = True
+            logger.error("SMTP authentication failed.")
             return False
         except smtplib.SMTPRecipientsRefused:
-            logger.error(f"Destinatario rechazado: {recipient}")
+            self._last_smtp_error_category = "smtp_recipient_rejected"
+            self._last_smtp_failure_is_definite = True
+            logger.error("SMTP recipient was rejected.")
             return False
-        except smtplib.SMTPException as e:
-            logger.error(f"Error SMTP: {str(e)}")
+        except (smtplib.SMTPException, OSError):
+            self._last_smtp_error_category = "smtp_delivery_indeterminate"
+            logger.error("SMTP delivery outcome is indeterminate.")
             return False
-        except Exception as e:
-            logger.error(f"Error enviando email a {recipient}: {str(e)}")
+        except Exception:
+            self._last_smtp_error_category = "smtp_unexpected_error"
+            logger.error("SMTP delivery failed unexpectedly.")
             return False
-            
-    async def send_test_email(self, test_recipient: str, email_address: str = None, email_password: str = None) -> bool:
-        """
-        Envía un email de prueba para verificar configuración
-        """
+
+    async def send_test_email(
+        self,
+        test_recipient: str,
+        email_address: str = None,
+        email_password: str = None,
+        offer: Dict = None,
+        run_id: str = None,
+        queue_managed: bool = False,
+    ) -> bool:
+        """Send a test email while retaining batch and local-spacing safeguards."""
         try:
+            self._last_application_send_reason = None
             # Configurar credenciales si se proporcionan
             if email_address and email_password:
                 self.email_address = email_address
                 self.email_password = email_password
-            
+
             if not self.email_address or not self.email_password:
                 logger.error("Credenciales de email no configuradas para test")
+                self._last_application_send_reason = "credentials_missing"
                 return False
-            
+
+            run_id = run_id or self._batch_id
+            offer = offer or {"id": "smtp-configuration-test"}
+            if not queue_managed and self._batch_attempt_count >= self.send_policy.batch_limit:
+                await self.send_policy.record_batch_skip_async(
+                    account_email=self.email_address,
+                    recipient_email=test_recipient,
+                    offer=offer,
+                    run_id=run_id,
+                )
+                logger.warning("Test email skipped by batch safety limit.")
+                self._last_application_send_reason = "batch_limit_reached"
+                return False
+            if not queue_managed:
+                self._batch_attempt_count += 1
+
+            decision = await self.send_policy.reserve_async(
+                account_email=self.email_address,
+                recipient_email=test_recipient,
+                offer=offer,
+                run_id=run_id,
+                test_mode=True,
+            )
+            if not decision.allowed:
+                logger.warning("Test email skipped by send policy: %s", decision.reason)
+                self._last_application_send_reason = decision.reason
+                return False
+            if decision.delay_seconds:
+                await asyncio.sleep(decision.delay_seconds)
+
             msg = MIMEMultipart()
             msg['From'] = self.email_address
             msg['To'] = test_recipient
             msg['Subject'] = "Test Email - ScrapingProfesNomadas"
-            
+
             body = """This is a test email from ScrapingProfesNomadas bot.
 
 If you receive this email, the email configuration is working correctly.
 
 Best regards,
 ScrapingProfesNomadas Bot"""
-            
+
             msg.attach(MIMEText(body, 'plain'))
-            
+
             success = await self._send_email(msg, test_recipient)
-            
+            await self.send_policy.record_smtp_result_async(
+                decision,
+                run_id,
+                success=success,
+                error_category=self._last_smtp_error_category,
+            )
+
             if success:
-                logger.info(f"Email de prueba enviado exitosamente a {test_recipient}")
+                logger.info("Test email accepted by SMTP.")
+                self._last_application_send_reason = "sent"
             else:
-                logger.error(f"Error enviando email de prueba a {test_recipient}")
-                
+                logger.error("Test email was not accepted by SMTP.")
+                self._last_application_send_reason = (
+                    self._last_smtp_error_category or "smtp_delivery_indeterminate"
+                )
+
             return success
-            
+
         except Exception as e:
-            logger.error(f"Error en email de prueba: {str(e)}")
+            logger.error("Test email failed (%s).", type(e).__name__)
+            self._last_application_send_reason = "preflight_unexpected_error"
             return False
 
     async def send_presentation_email(
@@ -454,31 +570,31 @@ ScrapingProfesNomadas Bot"""
         except Exception as exc:
             logger.error(f"Error enviando email con Resend: {exc}")
             return False
-    
+
     def _extract_tc_number_from_pdf(self, pdf_path: str) -> Optional[str]:
         """
         Extrae el número de Teaching Council de un PDF de registro TC
-        
+
         Args:
             pdf_path: Ruta al archivo PDF
-            
+
         Returns:
             El número de Teaching Council o None si no se encuentra
         """
         if not os.path.exists(pdf_path) or not pdf_path.lower().endswith('.pdf'):
             logger.warning(f"No se pudo extraer TC Number. El archivo no existe o no es PDF: {pdf_path}")
             return None
-            
+
         try:
             # Leer el PDF
             with open(pdf_path, 'rb') as file:
                 pdf = PdfReader(file)
                 text = ""
-                
+
                 # Extraer texto de todas las páginas
                 for page in pdf.pages:
                     text += page.extract_text() or ""
-                
+
                 # Buscar patrones comunes de TC Number
                 # Formato típico: 123456, 123/456, 1234567, etc.
                 patterns = [
@@ -491,16 +607,16 @@ ScrapingProfesNomadas Bot"""
                     r'TC Number[:\s]+([0-9]{6,7})',
                     r'TC Number[:\s]+([0-9]{3}[/\s][0-9]{3})'
                 ]
-                
+
                 # Probar cada patrón
                 for pattern in patterns:
                     match = re.search(pattern, text, re.IGNORECASE)
                     if match:
                         return match.group(1)
-                
+
                 logger.info("No se encontró un formato reconocible de Teaching Council Number")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error extrayendo TC Number del PDF: {str(e)}")
             return None

@@ -314,3 +314,27 @@ For issues, questions, or contributions:
 ---
 
 **Made with ❤️ for nomadic educators**
+
+## 🔐 Automatic delivery safeguards and audit logging
+
+Automatic SMTP delivery remains supported, but production sends now use an atomic
+Firestore-backed queue, reservation, duplicate protection, a per-account daily
+allowance, batch ceiling, batch pause, and cross-process spacing. The defaults
+are **100 per UTC day**, **10 per batch**, **10 seconds** between allocated sends,
+and **300 seconds** between batches. Firestore persists the scheduled delivery
+day plus shared batch/cooldown state, so concurrent workers cannot bypass those
+limits; unsafe production environment overrides are clamped. Test mode is excluded from production queue,
+quota, and reservations, but still follows local batch, spacing, and pause
+controls to protect the test inbox.
+
+Set `APPLICATION_AUDIT_HASH_KEY` to at least 32 random characters before
+production use: sending fails closed without it or without the reservation
+store. Production safety cannot be disabled by an environment flag; only the
+explicit `APPLICATION_AUDIT_ENVIRONMENT=test` permits isolated test-only
+relaxation. Google
+Cloud Logging is optional and opt-in through `GOOGLE_CLOUD_AUDIT_LOGGING_ENABLED`;
+it receives only structured pseudonymous audit events, never email content or
+credentials. See [`docs/EMAIL_DELIVERY_OPERATIONS.md`](docs/EMAIL_DELIVERY_OPERATIONS.md)
+for required IAM/API setup, Logs Explorer queries, App Password revocation, and
+why OAuth is preferred for credential security but does not authorize unlimited
+automated email.

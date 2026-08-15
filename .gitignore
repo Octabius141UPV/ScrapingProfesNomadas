@@ -97,3 +97,7 @@ vacan
 
 data
 docs
+# Keep the operational runbook version-controlled while generated documents remain ignored.
+!docs/
+docs/*
+!docs/EMAIL_DELIVERY_OPERATIONS.md

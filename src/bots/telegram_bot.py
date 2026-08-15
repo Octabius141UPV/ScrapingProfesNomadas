@@ -24,6 +24,8 @@ from email.mime.base import MIMEBase
 from email import encoders
 import ssl
 import re
+import uuid
+import functools
 
 # Añadir el directorio raíz al path para importaciones
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -41,6 +43,11 @@ from src.utils.firebase_manager import (
     mark_presentation_sent,
 )
 from src.generators.email_sender import EmailSender
+from src.utils.application_send_policy import ApplicationSendPolicy
+from src.utils.application_delivery_queue import (
+    ApplicationDeliveryQueue,
+    DeliveryAttempt,
+)
 try:
     from src.utils.notion_crm_manager import NotionCRMManager
     _NOTION_CRM_AVAILABLE = True
@@ -178,6 +185,8 @@ class TelegramBot:
         self.pdf_generator = PDFGenerator()
         self.document_reader = DocumentReader()
         self.email_sender = EmailSender()
+        self.send_policy = ApplicationSendPolicy()
+        self._last_application_send_reason = None
         
         # Configurar logging
         self.logger = logging.getLogger(__name__)
@@ -276,7 +285,8 @@ class TelegramBot:
             "2) Indica tu nombre, email y contraseña de aplicación de Gmail (App Password).\n"
             "3) Selecciona condado y nivel educativo.\n"
             "4) El bot hará scraping de EducationPosts, analizará requerimientos y preparará adjuntos.\n"
-            "5) Podrás simular/envíar. Si usas /test, el envío se redirige a un email de prueba.\n\n"
+            "5) Podrás simular/envíar. Si usas /test, el envío se redirige a un email de prueba, "
+            "pero mantiene los lotes, pausas y el espaciado.\n\n"
             "Consejos:\n"
             "- Nombra bien tus archivos para que el bot los reconozca (letter of application, cv, degree, application form, teaching practice, referees).\n"
             "- El Application Form debe ser PDF para personalizar POSITION ADVERTISED, School y ROLL NUMBER automáticamente.\n"
@@ -1763,71 +1773,136 @@ Hope to hear from you soon,
             self.logger.info(f"Conectando a SMTP: smtp.gmail.com:587")
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
-            self.logger.info(f"Iniciando sesión con: {from_email}")
+            self.logger.info("Authenticating the SMTP test send.")
             server.login(from_email, from_password)
-            self.logger.info(f"Enviando email a: raulforteabusiness@gmail.com")
+            self.logger.info("Sending SMTP test email.")
             server.send_message(msg)
             server.quit()
             self.logger.info("Email enviado correctamente")
             return True
         except Exception as e:
-            self.logger.error(f"Error enviando email de prueba: {str(e)}")
+            self.logger.error("SMTP test email failed (%s).", type(e).__name__)
             return False
 
-    async def send_application_email_for_offer(self, offer: Dict, from_email: str, from_password: str) -> bool:
-        """
-        Envía el email de aplicación real para una oferta específica.
-        Si falta algún documento requerido, NO envía el email ni registra en Firebase.
-        """
-        # NUEVO: Si la oferta tiene un enlace de aplicación externo, avisar al usuario y no enviar email
+    @staticmethod
+    def _send_application_smtp_message(msg, from_email, from_password, to_email):
+        """Perform SMTP I/O outside the Telegram event loop."""
+        try:
+            smtp_context = ssl.create_default_context()
+            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                server.starttls(context=smtp_context)
+                server.login(from_email, from_password)
+                server.sendmail(from_email, to_email, msg.as_string())
+            return True, None, False
+        except smtplib.SMTPAuthenticationError:
+            return False, "smtp_authentication_failed", True
+        except smtplib.SMTPRecipientsRefused:
+            return False, "smtp_recipient_rejected", True
+        except (smtplib.SMTPException, OSError):
+            # Delivery may be indeterminate after DATA; preserve the reservation.
+            return False, "smtp_delivery_indeterminate", False
+        except Exception:
+            return False, "smtp_unexpected_error", False
+
+    async def send_application_email_for_offer(
+        self,
+        offer: Dict,
+        from_email: str,
+        from_password: str,
+        run_id: Optional[str] = None,
+    ) -> bool:
+        """Send one application email after reserving a privacy-safe delivery slot."""
+        run_id = run_id or uuid.uuid4().hex
+        decision = None
+        reservation_settled = False
+        form_path = None
+        customized_paths = {}
+        self._last_application_send_reason = None
+
+        # Offers with a web application route must never be emailed by the bot.
         if offer.get('apply_link'):
-            user = None
-            for u in self.user_data.values():
-                if u.email and u.email.strip().lower() == from_email.strip().lower():
-                    user = u
-                    break
-            if user and hasattr(user, 'chat_id') and user.chat_id:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                loop.create_task(
+            user = next(
+                (
+                    candidate
+                    for candidate in self.user_data.values()
+                    if candidate.email
+                    and candidate.email.strip().lower() == from_email.strip().lower()
+                ),
+                None,
+            )
+            if user and getattr(user, 'chat_id', None):
+                asyncio.create_task(
                     self.application.bot.send_message(
                         chat_id=user.chat_id,
                         text=(
                             "ℹ️ Esta oferta requiere que apliques manualmente a través de la web. "
                             "No es posible enviar la aplicación por email.\n\n"
                             f"Por favor, haz clic en el siguiente enlace y sigue las instrucciones para aplicar: \n{offer['url']}"
-                        )
+                        ),
                     )
                 )
-            self.logger.info(f"Oferta con apply_link detectada, no se envía email: {offer.get('apply_link')} (se muestra url de la vacante: {offer.get('url')})")
+            await self.send_policy.audit.emit_async(
+                "application_send_skipped",
+                run_id=run_id,
+                outcome="skipped",
+                decision="external_application_route",
+            )
+            self._last_application_send_reason = "external_application_route"
             return False
 
         try:
-            # Buscar el usuario correspondiente al email de origen
-            user = None
-            for u in self.user_data.values():
-                if u.email and u.email.strip().lower() == from_email.strip().lower():
-                    user = u
-                    break
+            user = next(
+                (
+                    candidate
+                    for candidate in self.user_data.values()
+                    if candidate.email
+                    and candidate.email.strip().lower() == from_email.strip().lower()
+                ),
+                None,
+            )
             if not user:
-                self.logger.warning(f"Usuario no encontrado para el email: {from_email}")
+                self.logger.warning("Application email skipped: sender account was not found.")
+                self._last_application_send_reason = "sender_not_found"
                 return False
 
-            # Generar el formulario de aplicación personalizado
+            to_email = offer.get("email")
+            if not to_email:
+                self.logger.warning("Application email skipped: offer has no recipient.")
+                self._last_application_send_reason = "recipient_missing"
+                return False
+
+            test_mode = bool(getattr(user, "test_mode", False))
+            if test_mode:
+                to_email = "raulforteabusiness@gmail.com"
+
+            decision = await self.send_policy.reserve_async(
+                account_email=user.email,
+                recipient_email=to_email,
+                offer=offer,
+                run_id=run_id,
+                test_mode=test_mode,
+            )
+            self._last_application_send_reason = decision.reason
+            if not decision.allowed:
+                self.logger.warning("Application email skipped by send policy: %s", decision.reason)
+                return False
+
+            # The persisted reservation allocates a turn, including across processes.
+            if decision.delay_seconds:
+                await asyncio.sleep(decision.delay_seconds)
+
             form_path = await self.generate_application_form(offer, user)
             if not form_path or not os.path.exists(form_path):
-                self.logger.error("No se pudo generar el formulario de aplicación. No se enviará el email.")
+                self.logger.error("Application email skipped: application form could not be generated.")
+                await self.send_policy.release_after_definite_failure_async(
+                    decision, run_id, "preflight_failed"
+                )
+                reservation_settled = True
+                self._last_application_send_reason = "preflight_failed"
                 return False
 
-            # Obtener documentos requeridos usando la misma función que el método de test
-            customized_paths = {'application_form': form_path}
-            required_attachments = self.get_required_attachments(offer, user, customized_paths)
-            attachments = required_attachments
-
-            # Log de documentos adjuntados
-            self.logger.info(f"Documentos adjuntados para {offer.get('school_name', offer.get('school', 'School'))}:\n" + "\n".join([os.path.basename(doc) for doc in attachments]))
-
-            # Determinar el nivel educativo para el email
+            customized_paths = {"application_form": form_path}
+            attachments = self.get_required_attachments(offer, user, customized_paths)
             education_level = user.education_level or "Primary Education"
             if education_level == "pre-school":
                 education_level = "Pre-school Education"
@@ -1836,177 +1911,275 @@ Hope to hear from you soon,
             elif education_level == "post-primary":
                 education_level = "Post-primary Education"
 
-            # Determinar si tiene Teaching Council Number
             tc_info = self._get_tc_info(user, attachments)
+            body = f"""Dear Sir or Madam,
 
-            body = f"""Dear Sir or Madam,\n\nI am {user.name}, a {education_level} Teacher.{tc_info}\n\nI found your school and I believe my teaching style is highly aligned with your requirements and values. I am truly interested in working with you as a {education_level} Teacher.\n\nHere I attach all the required documents for the application. If you need any further information, please do not hesitate to contact me.\n\nHope to hear from you soon,\n\n{user.name}\n{user.email}"""
+I am {user.name}, a {education_level} Teacher.{tc_info}
 
-            # Asunto y destinatario
-            to_email = offer.get('email')
-            subject = f"Teaching post application for {offer.get('position', offer.get('vacancy', 'Teaching Position'))} at {offer.get('school', offer.get('school_name', 'School'))}"
-            if getattr(user, 'test_mode', False):
-                to_email = "raulforteabusiness@gmail.com"
-                subject = f"[TEST] {subject}"
-                self.logger.info("[TEST MODE] Enviando email SOLO al email de test, no al colegio real.")
+I found your school and I believe my teaching style is highly aligned with your requirements and values. I am truly interested in working with you as a {education_level} Teacher.
 
-            # Preparar user_data dict para el email sender
-            user_data = {
-                'name': user.name,
-                'email': user.email,
-                'email_password': user.email_password,
-                'documents': [],
-                'teaching_council_registration': user.teaching_council_registration,
-                'tc_route': user.tc_route  # Agregar la ruta del Teaching Council
-            }
-            for doc_path in attachments:
-                user_data['documents'].append({'path': doc_path, 'filename': os.path.basename(doc_path)})
+Here I attach all the required documents for the application. If you need any further information, please do not hesitate to contact me.
 
-            offer_for_email = dict(offer)
-            offer_for_email['email'] = to_email
-            offer_for_email['custom_subject'] = subject
+Hope to hear from you soon,
 
-            # --- ENVÍO DE EMAIL (idéntico al test, sin EmailSender) ---
+{user.name}
+{user.email}"""
+            subject = (
+                "[TEST] " if test_mode else ""
+            ) + (
+                f"Teaching post application for "
+                f"{offer.get('position', offer.get('vacancy', 'Teaching Position'))} "
+                f"at {offer.get('school', offer.get('school_name', 'School'))}"
+            )
+
             msg = MIMEMultipart()
-            msg['From'] = from_email
-            msg['To'] = to_email
-            msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            msg["From"] = from_email
+            msg["To"] = to_email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body, "plain", "utf-8"))
 
-            # Adjuntar documentos
             for doc_path in attachments:
-                if os.path.exists(doc_path):
-                    doc_type = None
-                    original_filename = os.path.basename(doc_path)
+                if not os.path.exists(doc_path):
+                    continue
+                doc_type = None
+                original_filename = os.path.basename(doc_path)
+                for key, doc_info in user.documents.items():
+                    if doc_info and doc_info.get("path") == doc_path:
+                        doc_type = key
+                        original_filename = doc_info.get("filename", original_filename)
+                        break
 
-                    # Buscar el tipo de documento para darle un nombre adecuado
-                    for key, doc_info in user.documents.items():
-                        if doc_info and doc_info.get('path') == doc_path:
-                            doc_type = key
-                            original_filename = doc_info.get('filename', original_filename)
-                            break
-                    
-                    # Forzar nombre y extensión para documentos problemáticos
-                    final_filename = original_filename
-                    if doc_type == 'degree':
-                        final_filename = "Degree.pdf"
-                    elif doc_type == 'tc_registration':
-                        # Mantener extensión original para imágenes
-                        ext = os.path.splitext(original_filename)[1]
-                        if not ext: # si no tiene extensión, forzar pdf
-                            ext = '.pdf'
-                        final_filename = f"TC_Registration{ext}"
-                    elif 'application_form_' in doc_path:
-                        # Application Form personalizado generado
-                        final_filename = "Application Form.pdf"
-                    
-                    with open(doc_path, 'rb') as f:
-                        part = MIMEBase('application', 'octet-stream')
-                        part.set_payload(f.read())
-                    encoders.encode_base64(part)
-                    part.add_header('Content-Disposition', f'attachment; filename="{final_filename}"') # Usar comillas para nombres con espacios
-                    msg.attach(part)
+                final_filename = original_filename
+                if doc_type == "degree":
+                    final_filename = "Degree.pdf"
+                elif doc_type == "tc_registration":
+                    extension = os.path.splitext(original_filename)[1] or ".pdf"
+                    final_filename = f"TC_Registration{extension}"
+                elif "application_form_" in doc_path:
+                    final_filename = "Application Form.pdf"
 
-            # Enviar email por SMTP
-            try:
-                context = ssl.create_default_context()
-                with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                    server.starttls(context=context)
-                    server.login(from_email, from_password)
-                    server.sendmail(from_email, to_email, msg.as_string())
-                self.logger.info(f"Email enviado exitosamente a {to_email}")
-                success = True
-            except Exception as e:
-                self.logger.error(f"Error al enviar email: {str(e)}")
-                success = False
+                with open(doc_path, "rb") as document:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(document.read())
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition", f'attachment; filename="{final_filename}"'
+                )
+                msg.attach(part)
 
-            # Registrar la aplicación en Firebase (solo si no está en modo test)
-            if success and not getattr(user, 'test_mode', False):
-                offer_id = offer.get('id') or offer.get('vacancy_id') or offer.get('url', '').split('/')[-1] or 'unknown'
-                mark_vacancy_as_applied(user.email, offer_id, data={
-                    'school': offer.get('school', ''),
-                    'vacancy': offer.get('vacancy', ''),
-                    'email': offer.get('email', ''),
-                    'applied_at': datetime.now().isoformat()
-                })
-                self.logger.info("Email enviado correctamente y registrado en Firebase.")
+            loop = asyncio.get_running_loop()
+            success, error_category, definite_failure = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self._send_application_smtp_message,
+                    msg,
+                    from_email,
+                    from_password,
+                    to_email,
+                ),
+            )
 
-            # Eliminar únicamente los documentos personalizados (no los originales subidos por el usuario)
-            files_to_delete = set([form_path] + list(customized_paths.values()))
-            for fpath in files_to_delete:
-                try:
-                    if fpath and os.path.exists(fpath):
-                        os.remove(fpath)
-                except Exception:
-                    pass
+            await self.send_policy.record_smtp_result_async(
+                decision,
+                run_id,
+                success=success,
+                error_category=error_category,
+            )
+            if success:
+                await self.send_policy.mark_sent_async(decision, run_id)
+                reservation_settled = True
+                self.logger.info("Application email accepted by SMTP.")
+            elif definite_failure:
+                await self.send_policy.release_after_definite_failure_async(
+                    decision, run_id, error_category
+                )
+                reservation_settled = True
+                self.logger.warning("Application email was definitively rejected (%s).", error_category)
+            else:
+                self.logger.warning(
+                    "Application email result is indeterminate; reservation remains locked for review (%s).",
+                    error_category,
+                )
+
+            if success and not test_mode:
+                offer_id = (
+                    offer.get("id")
+                    or offer.get("vacancy_id")
+                    or offer.get("url", "").split("/")[-1]
+                    or "unknown"
+                )
+                await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        mark_vacancy_as_applied,
+                        user.email,
+                        offer_id,
+                        data={
+                            "school": offer.get("school", ""),
+                            "vacancy": offer.get("vacancy", ""),
+                            "email": offer.get("email", ""),
+                            "applied_at": datetime.now().isoformat(),
+                        },
+                    ),
+                )
+            self._last_application_send_reason = "sent" if success else error_category
             return success
-        except Exception as e:
-            self.logger.error(f"Error al enviar email: {str(e)}")
+        except Exception:
+            self.logger.error("Application email failed before SMTP completion.")
+            if decision and not reservation_settled:
+                await self.send_policy.release_after_definite_failure_async(
+                    decision, run_id, "preflight_unexpected_error"
+                )
+            self._last_application_send_reason = "preflight_unexpected_error"
             return False
+        finally:
+            files_to_delete = set([form_path] + list(customized_paths.values()))
+            for file_path in files_to_delete:
+                try:
+                    if file_path and os.path.exists(file_path):
+                        os.remove(file_path)
+                except OSError:
+                    pass
 
     async def simulate_application(self, offers: List[Dict], user_id: int, context, from_email: str, from_password: str) -> None:
-        """
-        Envía un email real por cada vacante válida. Si el usuario está en modo test, los emails se envían solo al email de test.
-        """
+        """Persist and drain the automatic delivery queue from this live session."""
         if not offers:
+            await context.bot.send_message(chat_id=user_id, text="❌ No hay ofertas para enviar emails.")
+            return
+        bad_mails = ["noreply", "no-reply", "wordpress", "example.com", "educationposts.ie", "teachingcouncil.ie"]
+        mail_offers = [
+            offer
+            for offer in offers
+            if offer.get("email")
+            and not any(marker in offer["email"].lower() for marker in bad_mails)
+        ]
+        if not mail_offers:
             await context.bot.send_message(
-                chat_id=user_id,
-                text="❌ No hay ofertas para enviar emails."
+                chat_id=user_id, text="❌ No hay ofertas con email válido para enviar emails."
             )
             return
-        BAD_MAILS = ["noreply", "no-reply", "wordpress", "example.com", "educationposts.ie", "teachingcouncil.ie"]
-        valid_offers = [o for o in offers if o.get('email') and not any(bad in o.get('email', '').lower() for bad in BAD_MAILS)]
-        if not valid_offers:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="❌ No hay ofertas con email válido para enviar emails."
-            )
-            return
+
         user = self.user_data[user_id]
-        sent_count = 0
-        for idx, offer in enumerate(valid_offers, 1):
-            sim_msg = f"[{idx}/{len(valid_offers)}] Enviando email {'de TEST' if getattr(user, 'test_mode', False) else 'real'} para: {offer.get('school', 'N/A')} - {offer.get('vacancy', 'N/A')}\n"
-            sim_msg += f"📧 Email destino: {'raulforteabusiness@gmail.com' if getattr(user, 'test_mode', False) else offer.get('email', 'N/A')}\n"
-            await context.bot.send_message(chat_id=user_id, text=sim_msg)
-            success = await self.send_application_email_for_offer(offer, from_email, from_password)
-            if success:
-                sent_count += 1
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"✅ [{idx}/{len(valid_offers)}] Email {'de TEST ' if getattr(user, 'test_mode', False) else ''}enviado correctamente{' y registrado' if not getattr(user, 'test_mode', False) else ''}."
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"❌ [{idx}/{len(valid_offers)}] Error al enviar el email."
-                )
+        run_id = uuid.uuid4().hex
+        manual_offers = [offer for offer in mail_offers if offer.get("apply_link")]
+        valid_offers = [offer for offer in mail_offers if not offer.get("apply_link")]
+        for offer in manual_offers:
+            await self.send_application_email_for_offer(
+                offer, from_email, from_password, run_id=run_id
+            )
+        if not valid_offers:
+            return
+        test_mode = bool(getattr(user, "test_mode", False))
+        queue = ApplicationDeliveryQueue(
+            policy=self.send_policy,
+            account_email=user.email,
+            run_id=run_id,
+            test_mode=test_mode,
+        )
+        queue_items, enqueue_skipped_count = await queue.enqueue(valid_offers)
+        await self.send_policy.audit.emit_async(
+            "application_send_run_started",
+            run_id=run_id,
+            account_id=self.send_policy.audit.account_id(user.email),
+            requested_offer_count=len(offers),
+            eligible_offer_count=len(valid_offers),
+            queued_count=len(queue_items),
+            batch_offer_count=min(len(queue_items), self.send_policy.batch_limit),
+            batch_limit=self.send_policy.batch_limit,
+            daily_limit=self.send_policy.daily_limit,
+            test_mode=test_mode,
+        )
+        if not queue_items:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="⚠️ No se añadieron ofertas nuevas a la cola; se conservaron los bloqueos de deduplicación.",
+            )
+            return
+
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"🎉 Proceso completado. Emails enviados: {sent_count}/{len(valid_offers)}"
+            text=(
+                f"📬 Cola {'de TEST local' if test_mode else 'persistente'} iniciada: "
+                f"{len(queue_items)} ofertas. Se enviarán lotes de "
+                f"{self.send_policy.batch_limit} cada {self.send_policy.batch_pause_seconds} segundos, "
+                f"con {self.send_policy.min_interval_seconds} segundos entre envíos."
+            ),
         )
-        # Al finalizar todos los envíos, limpiar completamente la carpeta temp
-        self.clean_temp_folder()
-        
-        # Solo enviar email de prueba si el usuario está en modo test
-        user = self.user_data[user_id]
-        if getattr(user, 'test_mode', False):
-            success = await self.send_test_email(
-                offer=offer,
-                from_email=from_email,
-                from_password=from_password
+        progress_index = 0
+
+        async def send_queued_offer(offer: Dict) -> DeliveryAttempt:
+            nonlocal progress_index
+            progress_index += 1
+            sim_msg = (
+                f"[{progress_index}/{len(queue_items)}] Enviando email "
+                f"{'de TEST' if test_mode else 'real'} para: "
+                f"{offer.get('school', 'N/A')} - {offer.get('vacancy', 'N/A')}\n"
             )
+            await context.bot.send_message(chat_id=user_id, text=sim_msg)
+            success = await self.send_application_email_for_offer(
+                offer, from_email, from_password, run_id=run_id
+            )
+            reason = self._last_application_send_reason or "unknown"
             if success:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="✅ Email de prueba enviado correctamente:\n"
-                         "📧 Email enviado a raulforteabusiness@gmail.com\n"
-                         "📎 Incluye todos los detalles de la oferta\n"
-                         "🔍 [TEST] en el asunto del email"
+                    text=f"✅ [{progress_index}/{len(queue_items)}] Email enviado correctamente.",
                 )
             else:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="❌ Error al enviar el email de prueba. Por favor, verifica las credenciales."
+                    text=(
+                        f"⚠️ [{progress_index}/{len(queue_items)}] No se envió el email "
+                        f"({reason})."
+                    ),
                 )
+            return DeliveryAttempt(
+                success=success,
+                reason=reason,
+                error_category=None if success else reason,
+            )
+
+        async def announce_batch_pause(batch_number: int) -> None:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"⏸️ Lote {batch_number} terminado. Esperando "
+                    f"{self.send_policy.batch_pause_seconds} segundos antes del siguiente lote."
+                ),
+            )
+
+        result = await queue.drain(
+            queue_items,
+            send_queued_offer,
+            on_batch_pause=announce_batch_pause,
+        )
+
+        await self.send_policy.audit.emit_async(
+            "application_send_run_completed",
+            run_id=run_id,
+            account_id=self.send_policy.audit.account_id(user.email),
+            sent_count=result.sent_count,
+            skipped_count=result.skipped_count + enqueue_skipped_count,
+            queued_count=result.queued_count,
+            batch_offer_count=min(result.queued_count, self.send_policy.batch_limit),
+            daily_limit=self.send_policy.daily_limit,
+            decision=result.stopped_reason,
+            outcome="daily_limit_reached" if result.deferred_daily_limit else "completed",
+        )
+        completion_text = (
+            f"🎉 Cola finalizada para esta sesión. Emails enviados: "
+            f"{result.sent_count}/{result.queued_count}. Omitidos por seguridad: "
+            f"{result.skipped_count + enqueue_skipped_count}."
+        )
+        if result.deferred_daily_limit:
+            completion_text += " Se alcanzó el máximo diario; el resto permanece en cola."
+        elif result.stopped_reason == "smtp_authentication_failed":
+            completion_text += " La autenticación SMTP falló; las ofertas pendientes siguen en cola."
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=completion_text,
+        )
+        self.clean_temp_folder()
 
     async def run_scraping_process(self, user_id: int, context) -> None:
         if self.is_scraping:
@@ -2383,7 +2556,12 @@ Hope to hear from you soon,
             return
         user = self.user_data[user_id]
         user.test_mode = True
-        await update.message.reply_text("🧪 Modo test activado. Cuando envíes tus aplicaciones, se enviarán 10 emails de prueba al email de test en vez de los reales.")
+        await update.message.reply_text(
+            "🧪 Modo test activado. Las aplicaciones se redirigirán al email de prueba "
+            f"sin consumir cuota de producción, con un máximo de {self.send_policy.batch_limit} "
+            f"emails por lote, {self.send_policy.min_interval_seconds} segundos entre envíos y "
+            f"{self.send_policy.batch_pause_seconds} segundos de pausa entre lotes."
+        )
 
     def clean_temp_folder(self):
         """Elimina todo el contenido de la carpeta temp evitando afectar los documentos originales."""

@@ -13,6 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import signal
 import traceback
+import uuid
 
 # Cargar variables de entorno y forzar la sobreescritura
 load_dotenv(override=True)
@@ -27,6 +28,10 @@ from src.utils.logger import setup_logger
 from src.utils.document_reader import DocumentReader
 from src.generators.email_sender import EmailSender
 from src.generators.ai_email_generator_v2 import AIEmailGeneratorV2
+from src.utils.application_delivery_queue import (
+    ApplicationDeliveryQueue,
+    DeliveryAttempt,
+)
 
 # Configurar logging
 os.makedirs("logs", exist_ok=True)
@@ -206,64 +211,116 @@ async def process_user_request_with_county(user_data):
         excel_profile = {}
         if user_data.get('excel_profile'):
             excel_profile = ai_generator.load_excel_profile(user_data['excel_profile'])
-        sent_count = 0
         errors = []
+        run_id = uuid.uuid4().hex
+        test_mode = bool(user_data.get('test_mode'))
+        queue = ApplicationDeliveryQueue(
+            policy=email_sender.send_policy,
+            account_email=user_data.get('email', ''),
+            run_id=run_id,
+            test_mode=test_mode,
+        )
+        queue_items, enqueue_skipped_count = await queue.enqueue(valid_offers)
 
-        # --- INICIO BLOQUE TEST EMAILS ---
-        if user_data.get('test_mode'):
-            test_recipient = os.getenv('EMAIL_ADDRESS')
-            selected_offers = valid_offers[:10]
-            logger.info(f"Enviando 10 emails de prueba a {test_recipient} usando send_test_email...")
-            for idx, offer in enumerate(selected_offers, 1):
-                logger.info(f"[TEST] Enviando email de prueba {idx} para la vacante: {offer.get('school_name', 'N/A')} - {offer.get('position', 'N/A')}")
-                success = await email_sender.send_test_email(test_recipient)
-                if success:
-                    sent_count += 1
-                    logger.info(f"[TEST] Email de prueba {idx} enviado exitosamente a {test_recipient}")
-                else:
-                    errors.append(f"[TEST] Error enviando email de prueba {idx}")
+        if not queue_items:
             return {
                 'success': True,
-                'sent_count': sent_count,
-                'total_offers': len(selected_offers),
-                'message': f'Se enviaron {sent_count} emails de prueba a {test_recipient}',
-                'errors': errors
+                'sent_count': 0,
+                'total_offers': 0,
+                'skipped_by_queue': enqueue_skipped_count,
+                'message': 'No se añadieron ofertas nuevas a la cola; se conservaron los bloqueos de deduplicación.',
+                'errors': errors,
             }
-        # --- FIN BLOQUE TEST EMAILS ---
 
-        for offer, form in zip(valid_offers, generated_forms):
+        # Test delivery uses the same local batch and spacing runner, but never
+        # writes production queue metadata, quota, or reservations.
+        if test_mode:
+            test_recipient = os.getenv('EMAIL_ADDRESS')
+            logger.info(
+                "Encolando %s emails de prueba con lotes de %s y pausas de %s segundos.",
+                len(queue_items),
+                email_sender.send_policy.batch_limit,
+                email_sender.send_policy.batch_pause_seconds,
+            )
+
+            async def send_test_queued_offer(offer):
+                success = await email_sender.send_test_email(
+                    test_recipient,
+                    email_address=user_data.get('email'),
+                    email_password=user_data.get('email_password'),
+                    offer=offer,
+                    run_id=run_id,
+                    queue_managed=True,
+                )
+                if success:
+                    logger.info("[TEST] Email de prueba enviado exitosamente.")
+                else:
+                    errors.append("[TEST] Error enviando email de prueba")
+                return DeliveryAttempt(
+                    success=success,
+                    reason=email_sender._last_application_send_reason or "unknown",
+                    error_category=email_sender._last_smtp_error_category,
+                )
+
+            queue_result = await queue.drain(queue_items, send_test_queued_offer)
+            return {
+                'success': True,
+                'sent_count': queue_result.sent_count,
+                'total_offers': queue_result.queued_count,
+                'skipped_by_queue': queue_result.skipped_count + enqueue_skipped_count,
+                'message': (
+                    f'Se enviaron {queue_result.sent_count} emails de prueba de '
+                    f'{queue_result.queued_count} encolados, con lotes y pausas locales.'
+                ),
+                'errors': errors,
+            }
+
+        forms_by_offer = {
+            id(offer): form for offer, form in zip(valid_offers, generated_forms)
+        }
+
+        async def send_queued_offer(offer):
+            form = forms_by_offer.get(id(offer), {})
             try:
-                # Generar email personalizado
                 email_content = ai_generator.generate_email(
                     job_data=offer,
                     user_data=user_data,
-                    excel_profile=excel_profile
+                    excel_profile=excel_profile,
                 )
-                # Enviar email con el PDF adjunto
                 email_sent = await email_sender.send_application_email(
                     user_data=user_data,
                     offer=offer,
-                    application_form_pdf=form['file_path']  # Pasar el PDF personalizado
+                    application_form_pdf=form.get('file_path'),
+                    body=email_content,
+                    run_id=run_id,
+                    queue_managed=True,
                 )
-                
                 if email_sent:
-                    sent_count += 1
-                    logger.info(f"Email enviado a {offer['school_name']} ({offer['email']}) con application form adjunto")
+                    logger.info("Email enviado con application form adjunto.")
                 else:
-                    errors.append(f"Error enviando email a {offer['school_name']}")
-                
-                # Borrar el PDF generado después del envío
-                pdf_path = form['file_path']
+                    errors.append("Error enviando email para una oferta en cola")
+
+                pdf_path = form.get('file_path')
                 if pdf_path and os.path.exists(pdf_path):
                     os.remove(pdf_path)
-                    logger.info(f"PDF temporal eliminado: {os.path.basename(pdf_path)}")
-                    
-            except Exception as e:
-                error_msg = f"Error con {offer.get('school_name', 'Escuela Desconocida')}: {str(e)}"
-                errors.append(error_msg)
-                logger.error(error_msg)
-            await asyncio.sleep(3)
-        
+                    logger.info("PDF temporal eliminado: %s", os.path.basename(pdf_path))
+                return DeliveryAttempt(
+                    success=email_sent,
+                    reason=email_sender._last_application_send_reason or "unknown",
+                    error_category=email_sender._last_smtp_error_category,
+                )
+            except Exception as exc:
+                errors.append("Error preparando una oferta en cola")
+                logger.error("Error preparando una oferta en cola (%s)", type(exc).__name__)
+                return DeliveryAttempt(
+                    success=False,
+                    reason="preflight_unexpected_error",
+                    error_category="preflight_unexpected_error",
+                )
+
+        queue_result = await queue.drain(queue_items, send_queued_offer)
+        sent_count = queue_result.sent_count
+
         # Guardar resultados en archivo JSON
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         county_suffix = county_selection if county_selection != "all" else "ireland"
@@ -299,7 +356,9 @@ async def process_user_request_with_county(user_data):
             'file_saved': filepath,
             'generated_forms': generated_forms,
             'errors': errors,
-            'message': f'Scraping completado exitosamente en {county_config["name"]}. Generados {len(generated_forms)} application forms PDFs.'
+            'skipped_by_queue': queue_result.skipped_count + enqueue_skipped_count,
+            'queue_deferred_daily_limit': queue_result.deferred_daily_limit,
+            'message': f'Scraping completado exitosamente en {county_config["name"]}. Generados {len(generated_forms)} application forms PDFs y procesada la cola de envío.'
         }
         
     except Exception as e:
