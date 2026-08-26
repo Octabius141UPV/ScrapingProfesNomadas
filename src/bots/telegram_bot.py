@@ -132,6 +132,65 @@ def es_respuesta_negativa(respuesta: str) -> bool:
     resp = normaliza_respuesta(respuesta)
     return resp in {"no", "n"}
 
+
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
+
+def format_etb_exclusion_notice(
+    count: int,
+    school_names: List[str],
+    max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH,
+) -> str:
+    """Build a bounded ETB exclusion notice using unique public school names."""
+    try:
+        count = max(0, int(count))
+    except (TypeError, ValueError):
+        count = 0
+    if not count:
+        return ""
+
+    unique_names = []
+    for raw_name in school_names or []:
+        name = " ".join(str(raw_name).split())
+        if name and name not in unique_names:
+            unique_names.append(name)
+
+    prefix = f"⛔ Se ignoraron {count} ofertas de colegios ETB."
+    suffix = " No se generarán PDFs ni se enviarán emails para ellas."
+    if not unique_names:
+        return (prefix + suffix)[:max_length]
+
+    label = prefix + " Colegios: "
+    visible_names = []
+    for name in unique_names:
+        candidate = label + ", ".join(visible_names + [name]) + "." + suffix
+        if len(candidate) > max_length:
+            break
+        visible_names.append(name)
+
+    omitted_count = len(unique_names) - len(visible_names)
+    if omitted_count:
+        marker = f" (+{omitted_count} nombres más)."
+        while visible_names:
+            candidate = (
+                label
+                + ", ".join(visible_names)
+                + marker
+                + suffix
+            )
+            if len(candidate) <= max_length:
+                return candidate
+            visible_names.pop()
+
+        # This fallback is only relevant for unusually small custom limits;
+        # Telegram's 4096-character limit leaves ample room for the normal
+        # prefix, marker, and safety statement.
+        compact = prefix + f" (+{omitted_count} nombres no mostrados)." + suffix
+        return compact[:max_length]
+
+    return label + ", ".join(visible_names) + "." + suffix
+
+
 class TelegramBot:
     def __init__(self, token: str):
         """
@@ -2218,6 +2277,17 @@ Hope to hear from you soon,
             from src.scrapers.scraper_educationposts import DUBLIN_ZONES, DUBLIN_DISTRICTS
             
             offers = []
+            excluded_etb_count = 0
+            excluded_etb_names = []
+
+            def collect_excluded_etb_listings(scraper):
+                """Collect the scraper's ETB exclusions without exposing emails."""
+                nonlocal excluded_etb_count
+                excluded_etb_count += getattr(scraper, "excluded_school_counts", {}).get("ETB", 0)
+                for school_name in getattr(scraper, "excluded_school_names_by_reason", {}).get("ETB", []):
+                    if school_name not in excluded_etb_names:
+                        excluded_etb_names.append(school_name)
+
             if user.county_selection == "dublin" and user.dublin_zone and user.dublin_zone != "all":
                 # Para zonas específicas de Dublin, hacer scraping en todos los distritos de esa zona
                 districts = DUBLIN_ZONES.get(user.dublin_zone, [])
@@ -2240,6 +2310,7 @@ Hope to hear from you soon,
                         # Crear scraper para este distrito específico
                         scraper = EducationPosts(level=level, county_id=county_id, district_id=district_id)
                         district_offers = await scraper.fetch_all()  # Limitamos a 5 por distrito para evitar sobrecarga
+                        collect_excluded_etb_listings(scraper)
                         
                         if district_offers:
                             await context.bot.send_message(
@@ -2273,10 +2344,27 @@ Hope to hear from you soon,
                     )
                     scraper = EducationPosts(level=level, county_id=county_id, district_id="")
                     offers = await scraper.fetch_all()
+                    collect_excluded_etb_listings(scraper)
             else:
                 # Para Cork o todo Dublin, usar el scraper normal
                 scraper = EducationPosts(level=level, county_id=county_id, district_id="")
                 offers = await scraper.fetch_all()
+                collect_excluded_etb_listings(scraper)
+
+            if excluded_etb_count:
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=format_etb_exclusion_notice(
+                            excluded_etb_count, excluded_etb_names
+                        ),
+                    )
+                except Exception as exc:
+                    # A notification failure must not turn a successful scrape
+                    # into an aborted run.
+                    logger.warning(
+                        "Could not send ETB exclusion notice (%s)", type(exc).__name__
+                    )
                 
             if not offers:
                 await context.bot.send_message(

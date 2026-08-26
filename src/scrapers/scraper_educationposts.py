@@ -61,6 +61,15 @@ VACANCY_TYPES = {
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", re.I)
 BAD_MAIL = ("noreply", "no-reply", "wordpress", "example.com", "educationposts.ie", "teachingcouncil.ie")
 
+# School-name exclusions are kept in one place so every listing format and
+# every processing stage applies the same rules.  Keep the historical
+# Gaelscoil substring match, while requiring ETB to be a standalone acronym
+# (for example, ``(ETB)`` or ``ETB,``) to avoid unrelated names.
+EXCLUDED_SCHOOL_NAME_PATTERNS = (
+    ("Gaelscoil", re.compile(r"gaelscoil", re.IGNORECASE)),
+    ("ETB", re.compile(r"\betb\b", re.IGNORECASE)),
+)
+
 log = logging.getLogger("edu")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
@@ -76,6 +85,25 @@ def first_valid_email(text: str) -> Optional[str]:
                 email = email.split("Website")[0].strip()
             return email
     return None
+
+
+def school_name_exclusion_reason(school_name: Optional[str]) -> Optional[str]:
+    """Return the configured exclusion label for a school name, if any."""
+    school_name = str(school_name or "")
+    for label, pattern in EXCLUDED_SCHOOL_NAME_PATTERNS:
+        if pattern.search(school_name):
+            return label
+    return None
+
+
+def is_excluded_school_name(school_name: Optional[str]) -> bool:
+    """Return whether a school name should be ignored by the scraper."""
+    return school_name_exclusion_reason(school_name) is not None
+
+
+def get_offer_school_name(offer: Dict) -> str:
+    """Get a listing's school name regardless of the source field name."""
+    return str(offer.get("school") or offer.get("school_name") or "").strip()
 
 
 async def rand_sleep(a=0.5, b=1.5, safe_mode=False):
@@ -182,6 +210,11 @@ class EducationPosts:
             
         self.cookies = {}  # Guardaremos las cookies de sesión aquí
         self.is_logged_in = False
+        self.excluded_school_count = 0
+        self.excluded_school_names = []
+        self.excluded_school_counts = {}
+        self.excluded_school_names_by_reason = {}
+        self._excluded_school_identity_keys = set()
         
         log.info(f"Configurado scraper para nivel: {self.level}, condado: {self.county_name} (ID: {self.county_id}), tipo: {self.vacancy_name} (VC: {self.vacancy_type})")
         log.info("🔍 Filtrado avanzado de vacantes: Solo 'teacher', excluyendo 'principal teacher' y 'special school teacher placement'")
@@ -199,6 +232,14 @@ class EducationPosts:
         Returns:
             Lista de ofertas con detalles y email.
         """
+        # Keep the summary scoped to this scrape.  Telegram consumes it after
+        # fetch_all() to explain which public school listings were ignored.
+        self.excluded_school_count = 0
+        self.excluded_school_names = []
+        self.excluded_school_counts = {}
+        self.excluded_school_names_by_reason = {}
+        self._excluded_school_identity_keys = set()
+
         # Crear una sesión HTTP con cookies persistentes
         cookies_jar = aiohttp.CookieJar()
         async with aiohttp.ClientSession(headers=HEAD, cookie_jar=cookies_jar) as s:
@@ -261,13 +302,20 @@ class EducationPosts:
             log.info("🔍 Obteniendo detalles de las ofertas...")
             detailed_offers = []
             for i, offer in enumerate(basic[:limit] if limit else basic, 1):
+                # Filter before requesting the detail page.  This also covers
+                # callers that provide basic offers without using the normal
+                # listing-page extraction path.
+                if self._record_excluded_school(
+                    get_offer_school_name(offer), source="listing", offer=offer
+                ):
+                    continue
                 detailed = await self._offer_detail(s, offer.copy())
                 if detailed:
                     # Loguear todos los campos relevantes antes de filtrar
                     log.info(f"[DEBUG] Oferta completa antes de filtrar: {detailed}")
-                    school_name = detailed.get('school_name', '').lower()
-                    if "gaelscoil" in school_name:
-                        log.info(f"⛔ Oferta filtrada (Gaelscoil): {detailed.get('school_name', 'N/A')}")
+                    if self._record_excluded_school(
+                        get_offer_school_name(detailed), source="detail", offer=detailed
+                    ):
                         continue
                     # Unifica todos los campos relevantes en un solo texto
                     all_text = ' '.join([
@@ -301,6 +349,55 @@ class EducationPosts:
             log.info(f"🎯 Total ofertas procesadas: {len(detailed_offers)}")
             
             return detailed_offers
+
+    @staticmethod
+    def _excluded_school_keys_for_offer(
+        school_name: str, offer: Optional[Dict] = None
+    ) -> Tuple[Tuple[str, str, str], ...]:
+        """Build stable aliases for deduplicating parser-path observations."""
+        offer = offer or {}
+        offer_id = str(offer.get("id") or "").strip().casefold()
+        normalized_name = " ".join(str(school_name or "").split()).casefold()
+        normalized_url = str(offer.get("url") or "").strip().casefold()
+        keys = []
+        if offer_id and offer_id != "sin id":
+            keys.append(("id", offer_id, ""))
+        # The name+URL alias lets desktop and mobile parser paths deduplicate
+        # even when only one of them exposes the advert ID.
+        if normalized_name or normalized_url:
+            keys.append(("name_url", normalized_name, normalized_url))
+        return tuple(keys)
+
+    def _record_excluded_school(
+        self,
+        school_name: str,
+        source: str = "",
+        offer: Optional[Dict] = None,
+    ) -> Optional[str]:
+        """Record and log an excluded school, returning its exclusion label."""
+        reason = school_name_exclusion_reason(school_name)
+        if reason is None:
+            return None
+
+        school_name = school_name.strip() or "Unknown school"
+        exclusion_keys = self._excluded_school_keys_for_offer(school_name, offer)
+        if any(key in self._excluded_school_identity_keys for key in exclusion_keys):
+            # Desktop-to-mobile fallback can inspect the same listing twice.
+            # It must remain excluded, but only count it once in summaries.
+            log.debug("Duplicate excluded listing ignored for summary: %s", school_name)
+            return reason
+        self._excluded_school_identity_keys.update(exclusion_keys)
+        self.excluded_school_count += 1
+        if school_name not in self.excluded_school_names:
+            self.excluded_school_names.append(school_name)
+        self.excluded_school_counts[reason] = self.excluded_school_counts.get(reason, 0) + 1
+        names_for_reason = self.excluded_school_names_by_reason.setdefault(reason, [])
+        if school_name not in names_for_reason:
+            names_for_reason.append(school_name)
+
+        source_suffix = f" at {source}" if source else ""
+        log.info("⛔ Excluded listing (%s)%s: %s", reason, source_suffix, school_name)
+        return reason
 
     # --------- AUTHENTICATION ----------
     async def login(self, session=None) -> bool:
@@ -477,9 +574,15 @@ class EducationPosts:
                             if not vacancy_name and "teacher" in tr.text.lower():
                                 vacancy_name = "Teacher"
                         
-                        # Filtrar colegios Gaelscoil
-                        if "gaelscoil" in school_name.lower():
-                            log.info(f"Filtrado colegio Gaelscoil: {school_name}")
+                        # Apply all configured school-name exclusions before
+                        # allowing this listing to reach detail processing.
+                        listing = {
+                            "id": tds[0].text.strip() if tds[0] else "Sin ID",
+                            "url": urljoin(BASE, href),
+                        }
+                        if self._record_excluded_school(
+                            school_name, source="desktop listing", offer=listing
+                        ):
                             continue
                         
                         # Filtrar vacantes según criterios
@@ -556,9 +659,11 @@ class EducationPosts:
                         if head:
                             data["deadline"] = head.text.strip()
                             
-                        # Filtrar colegios Gaelscoil
-                        if "school" in data and "gaelscoil" in data["school"].lower():
-                            log.info(f"Filtrado colegio Gaelscoil (móvil): {data.get('school')}")
+                        # Apply all configured school-name exclusions before
+                        # allowing this listing to reach detail processing.
+                        if self._record_excluded_school(
+                            get_offer_school_name(data), source="mobile listing", offer=data
+                        ):
                             continue
                         
                         # Filtrar vacantes según criterios
